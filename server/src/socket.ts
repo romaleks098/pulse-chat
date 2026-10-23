@@ -377,9 +377,16 @@ export function setupSocketServer(io: Server) {
     // WebRTC Calling signaling events
     socket.on('call:start', async ({ conversationId, isVideo }: { conversationId: string; isVideo: boolean }) => {
       try {
-        const conv = await db.get<any>('SELECT is_saved, type FROM conversations WHERE id = ?', conversationId);
-        if (!conv || Number(conv.is_saved) === 1 || conv.is_saved === true) {
-          socket.emit('call:error', { message: 'Нельзя позвонить в Избранное' });
+        const conv = await db.get<any>('SELECT is_saved, type, name, is_channel FROM conversations WHERE id = ?', conversationId);
+        if (
+          !conv ||
+          Number(conv.is_saved) === 1 ||
+          conv.is_saved === true ||
+          conv.name === 'Избранное' ||
+          conv.is_channel === 1 ||
+          conv.type === 'channel'
+        ) {
+          socket.emit('call:error', { message: 'Звонки в данном чате недоступны' });
           return;
         }
 

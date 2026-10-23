@@ -115,7 +115,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
   // Find saved messages conversation
   const savedConv = conversations.find((c) => c.isSaved);
-  const otherConversations = conversations.filter((c) => !c.isSaved);
+  const otherConversations = conversations.filter((c) => !c.isSaved && c.name !== 'Избранное');
 
   // Filter conversations
   const filteredConversations = otherConversations.filter((c) => {
@@ -145,13 +145,16 @@ export const Sidebar: React.FC<SidebarProps> = ({
     .filter((c) => c.isChannel)
     .reduce((acc, c) => acc + (c.unreadCount || 0), 0);
 
-  // Should show Saved Messages row
-  const showSavedInList =
-    (filter === 'all' || filter === 'direct') &&
-    (!search.trim() ||
-      'избранное'.includes(search.toLowerCase()) ||
+  // Should show Saved Messages row:
+  // Strictly shown in 'Все' (all) tab, OR if the user is explicitly searching for 'избранное' or 'заметки'
+  const isSearchMatchSaved =
+    Boolean(search.trim()) &&
+    ('избранное'.includes(search.toLowerCase()) ||
       'заметки'.includes(search.toLowerCase()) ||
       (savedConv?.lastMessage?.text || '').toLowerCase().includes(search.toLowerCase()));
+
+  const showSavedInList =
+    (filter === 'all' && !search.trim()) || isSearchMatchSaved;
 
   const isSavedActive = savedConv ? activeConversationId === savedConv.id : false;
 
@@ -177,8 +180,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
     if (conv.isSaved) {
       return [
         {
-          label: 'Очистить историю',
-          icon: <Trash2 className="w-4 h-4" />,
+          label: 'Очистить заметки',
+          icon: <Trash2 className="w-4 h-4 text-rose-400" />,
           danger: true,
           onClick: () => {
             clearConversation(conv.id);
@@ -337,7 +340,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
       {/* Conversations List */}
       <div className="flex-1 overflow-y-auto px-2 py-1.5 space-y-1">
-        {/* Single Saved Messages row (pinned top in 'all' / 'direct') */}
+        {/* Single Saved Messages row (pinned top in 'all') */}
         {showSavedInList && (
           <div
             onClick={openSavedMessages}
@@ -345,20 +348,25 @@ export const Sidebar: React.FC<SidebarProps> = ({
             className={`rounded-2xl flex items-center cursor-pointer transition-all ${densityPadding} ${
               isSavedActive
                 ? 'bg-[var(--accent-default,#6366f1)] text-white shadow-md'
-                : 'hover:bg-white/5 text-[var(--text-secondary,#94a3b8)] bg-[var(--accent-subtle,rgba(99,102,241,0.08))] border border-[var(--border-subtle,rgba(255,255,255,0.06))]'
+                : 'hover:bg-white/5 text-[var(--text-secondary,#94a3b8)]'
             }`}
           >
             <Avatar name="Избранное" size="lg" isSaved={true} />
             <div className="min-w-0 flex-1">
               <div className="flex items-center justify-between gap-1 mb-0.5">
-                <span className={`text-sm font-semibold truncate ${isSavedActive ? 'text-white' : 'text-[var(--text-primary,#f8fafc)]'}`}>
-                  Избранное
-                </span>
-                {savedConv?.lastMessage && (
-                  <span className={`text-[10px] shrink-0 ${isSavedActive ? 'text-white/80' : 'text-[var(--text-muted,#64748b)]'}`}>
-                    {formatChatListTime(savedConv.lastMessage.createdAt)}
+                <div className="flex items-center gap-1.5 min-w-0">
+                  <span className={`text-sm font-semibold truncate ${isSavedActive ? 'text-white' : 'text-[var(--text-primary,#f8fafc)]'}`}>
+                    Избранное
                   </span>
-                )}
+                </div>
+                <div className="flex items-center gap-1 shrink-0">
+                  <Pin className={`w-3 h-3 rotate-45 shrink-0 ${isSavedActive ? 'text-white' : 'text-[var(--accent-default,#6366f1)]'}`} />
+                  {savedConv?.lastMessage && (
+                    <span className={`text-[10px] ${isSavedActive ? 'text-white/80' : 'text-[var(--text-muted,#64748b)]'}`}>
+                      {formatChatListTime(savedConv.lastMessage.createdAt)}
+                    </span>
+                  )}
+                </div>
               </div>
               <p className={`text-xs truncate ${isSavedActive ? 'text-white/90' : 'text-[var(--text-secondary,#94a3b8)]'}`}>
                 {savedConv?.lastMessage?.text || 'Ваши заметки и файлы'}
@@ -477,12 +485,22 @@ export const Sidebar: React.FC<SidebarProps> = ({
         ) : !showSavedInList ? (
           <div className="py-12 text-center text-[var(--text-secondary,#94a3b8)] text-xs flex flex-col items-center">
             <MessageCircle className="w-8 h-8 opacity-40 mb-2" />
-            <span>Чатов не найдено</span>
+            <span>
+              {search.trim()
+                ? 'Чатов не найдено'
+                : filter === 'direct'
+                ? 'Личных диалогов пока нет'
+                : filter === 'group'
+                ? 'Групп пока нет'
+                : filter === 'channel'
+                ? 'Каналов пока нет'
+                : 'Чатов пока нет'}
+            </span>
             <button
               onClick={onOpenNewChat}
               className="mt-3 px-3 py-1.5 bg-[var(--accent-subtle,rgba(99,102,241,0.15))] hover:bg-[var(--accent-subtle,rgba(99,102,241,0.25))] text-[var(--accent-default,#6366f1)] text-xs font-medium rounded-xl transition-colors cursor-pointer"
             >
-              Начать переписку
+              {filter === 'group' ? 'Создать группу' : filter === 'channel' ? 'Создать канал' : 'Начать переписку'}
             </button>
           </div>
         ) : null}

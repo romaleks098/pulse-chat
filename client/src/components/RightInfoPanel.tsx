@@ -442,7 +442,7 @@ export const RightInfoPanel: React.FC<RightInfoPanelProps> = ({
             className="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs text-rose-400 hover:bg-rose-500/10 transition-colors cursor-pointer"
           >
             <Trash2 className="w-4 h-4" />
-            <span>Очистить историю чата</span>
+            <span>{isSaved ? 'Очистить заметки' : 'Очистить историю чата'}</span>
           </button>
         </div>
       </div>
@@ -451,9 +451,13 @@ export const RightInfoPanel: React.FC<RightInfoPanelProps> = ({
       {showClearConfirm && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm animate-in fade-in duration-150">
           <div className="w-full max-w-sm bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-2xl text-slate-200">
-            <h3 className="text-base font-bold text-white mb-2">Очистить историю?</h3>
+            <h3 className="text-base font-bold text-white mb-2">
+              {isSaved ? 'Очистить заметки?' : 'Очистить историю?'}
+            </h3>
             <p className="text-xs text-slate-400 mb-6 leading-relaxed">
-              Все сообщения в этом чате будут безвозвратно удалены. Вы уверены?
+              {isSaved
+                ? 'Все ваши сохранённые заметки и файлы в этом чате будут удалены.'
+                : 'Все сообщения в этом чате будут безвозвратно удалены. Вы уверены?'}
             </p>
             <div className="flex items-center justify-end gap-2">
               <button

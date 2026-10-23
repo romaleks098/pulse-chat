@@ -168,4 +168,16 @@ export const migrations: Migration[] = [
       ];
     },
   },
+  {
+    version: 3,
+    name: '003_heal_saved_messages',
+    up: (_isPostgres: boolean) => {
+      return [
+        // Ensure all saved messages chats have is_saved = 1 and type = 'direct'
+        `UPDATE conversations
+         SET is_saved = 1, type = 'direct'
+         WHERE name = 'Избранное' OR avatar_url LIKE '%saved_messages_star%';`,
+      ];
+    },
+  },
 ];

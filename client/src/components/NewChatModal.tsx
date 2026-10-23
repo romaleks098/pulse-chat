@@ -20,8 +20,16 @@ interface NewChatModalProps {
   onClose: () => void;
 }
 
+const GROUP_AVATAR_PRESETS = [
+  'https://api.dicebear.com/7.x/identicon/svg?seed=Work',
+  'https://api.dicebear.com/7.x/identicon/svg?seed=Friends',
+  'https://api.dicebear.com/7.x/identicon/svg?seed=Family',
+  'https://api.dicebear.com/7.x/identicon/svg?seed=Gaming',
+  'https://api.dicebear.com/7.x/identicon/svg?seed=PulseGroup',
+];
+
 export const NewChatModal: React.FC<NewChatModalProps> = ({ isOpen, onClose }) => {
-  const { createDirectChat, createGroupChat, createChannel } = useChat();
+  const { createDirectChat, createGroupChat, createChannel, conversations } = useChat();
 
   const [tab, setTab] = useState<'direct' | 'group' | 'channel'>('direct');
   const [searchQuery, setSearchQuery] = useState('');
@@ -31,6 +39,8 @@ export const NewChatModal: React.FC<NewChatModalProps> = ({ isOpen, onClose }) =
 
   // Group state
   const [groupName, setGroupName] = useState('');
+  const [groupDescription, setGroupDescription] = useState('');
+  const [groupAvatar, setGroupAvatar] = useState(GROUP_AVATAR_PRESETS[0]);
   const [selectedUsers, setSelectedUsers] = useState<User[]>([]);
   const [creatingGroup, setCreatingGroup] = useState(false);
 
@@ -38,6 +48,17 @@ export const NewChatModal: React.FC<NewChatModalProps> = ({ isOpen, onClose }) =
   const [channelName, setChannelName] = useState('');
   const [channelDescription, setChannelDescription] = useState('');
   const [creatingChannel, setCreatingChannel] = useState(false);
+
+  // Extract recent contacts from conversations
+  const recentContacts = React.useMemo(() => {
+    const map = new Map<string, User>();
+    for (const c of conversations) {
+      if (c.partner && !c.isSaved && c.partner.id) {
+        map.set(c.partner.id, c.partner);
+      }
+    }
+    return Array.from(map.values());
+  }, [conversations]);
 
   useEffect(() => {
     if (!searchQuery.trim()) {
@@ -66,6 +87,8 @@ export const NewChatModal: React.FC<NewChatModalProps> = ({ isOpen, onClose }) =
       setSearchQuery('');
       setSearchResults([]);
       setGroupName('');
+      setGroupDescription('');
+      setGroupAvatar(GROUP_AVATAR_PRESETS[0]);
       setSelectedUsers([]);
       setChannelName('');
       setChannelDescription('');
@@ -95,13 +118,14 @@ export const NewChatModal: React.FC<NewChatModalProps> = ({ isOpen, onClose }) =
 
   const handleCreateGroup = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!groupName.trim()) return;
+    if (!groupName.trim() || selectedUsers.length === 0) return;
 
     setCreatingGroup(true);
     setError(null);
     try {
       await createGroupChat({
         name: groupName.trim(),
+        avatarUrl: groupAvatar,
         memberIds: selectedUsers.map((u) => u.id),
       });
       onClose();
@@ -111,6 +135,13 @@ export const NewChatModal: React.FC<NewChatModalProps> = ({ isOpen, onClose }) =
       setCreatingGroup(false);
     }
   };
+
+  const isGroupValid = Boolean(groupName.trim()) && selectedUsers.length > 0;
+  const missingRequirementText = !groupName.trim()
+    ? 'Укажите название группы'
+    : selectedUsers.length === 0
+    ? 'Выберите хотя бы одного участника'
+    : null;
 
   const handleCreateChannel = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -235,9 +266,35 @@ export const NewChatModal: React.FC<NewChatModalProps> = ({ isOpen, onClose }) =
                 <div className="py-8 text-center text-xs text-[var(--text-secondary,#94a3b8)]">
                   Пользователи не найдены
                 </div>
+              ) : recentContacts.length > 0 ? (
+                <div className="py-2">
+                  <div className="text-[11px] font-semibold text-[var(--text-secondary,#94a3b8)] uppercase tracking-wider mb-2 px-1">
+                    Недавние контакты
+                  </div>
+                  <div className="space-y-1">
+                    {recentContacts.map((user) => (
+                      <div
+                        key={user.id}
+                        onClick={() => handleStartDirect(user)}
+                        className="p-2 rounded-xl flex items-center gap-3 hover:bg-white/5 cursor-pointer transition-colors"
+                      >
+                        <Avatar src={user.avatarUrl} name={user.displayName} size="sm" />
+                        <div className="min-w-0 flex-1">
+                          <div className="text-xs font-semibold text-[var(--text-primary,#f8fafc)] truncate">
+                            {user.displayName}
+                          </div>
+                          <div className="text-[11px] text-[var(--text-secondary,#94a3b8)] truncate">
+                            @{user.username}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
               ) : (
                 <div className="py-8 text-center text-xs text-[var(--text-muted,#64748b)]">
-                  Введите имя или никнейм для поиска собеседника
+                  <Search className="w-6 h-6 opacity-40 mx-auto mb-2" />
+                  <span>Введите имя или @username для поиска собеседника</span>
                 </div>
               )}
             </div>
@@ -247,6 +304,29 @@ export const NewChatModal: React.FC<NewChatModalProps> = ({ isOpen, onClose }) =
         {/* Tab 2: Group Chat */}
         {tab === 'group' && (
           <form onSubmit={handleCreateGroup} className="space-y-4">
+            {/* Group Avatar Selection */}
+            <div>
+              <label className="block text-xs font-semibold uppercase tracking-wider text-[var(--text-secondary,#94a3b8)] mb-1.5">
+                Аватар группы
+              </label>
+              <div className="flex items-center gap-2 overflow-x-auto p-1.5 bg-black/20 rounded-xl border border-white/5">
+                {GROUP_AVATAR_PRESETS.map((preset, idx) => (
+                  <button
+                    key={idx}
+                    type="button"
+                    onClick={() => setGroupAvatar(preset)}
+                    className={`relative w-9 h-9 rounded-full p-0.5 transition-all cursor-pointer shrink-0 ${
+                      groupAvatar === preset
+                        ? 'ring-2 ring-[var(--accent-default,#6366f1)] scale-105 shadow-md'
+                        : 'opacity-70 hover:opacity-100'
+                    }`}
+                  >
+                    <img src={preset} alt="preset" className="w-full h-full rounded-full bg-slate-800 object-cover" />
+                  </button>
+                ))}
+              </div>
+            </div>
+
             <div>
               <label className="block text-xs font-semibold uppercase tracking-wider text-[var(--text-secondary,#94a3b8)] mb-1.5">
                 Название группы
@@ -257,6 +337,19 @@ export const NewChatModal: React.FC<NewChatModalProps> = ({ isOpen, onClose }) =
                 value={groupName}
                 onChange={(e) => setGroupName(e.target.value)}
                 placeholder="Например: Рабочий проект, Друзья..."
+                className="w-full px-3 py-2 bg-[var(--bg-input,#080c14)] border border-[var(--border-subtle,rgba(255,255,255,0.08))] rounded-xl text-xs text-[var(--text-primary,#f8fafc)] placeholder-[var(--text-muted,#64748b)] focus:outline-none focus:border-[var(--accent-default,#6366f1)] transition-colors"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold uppercase tracking-wider text-[var(--text-secondary,#94a3b8)] mb-1.5">
+                Описание группы (необязательно)
+              </label>
+              <input
+                type="text"
+                value={groupDescription}
+                onChange={(e) => setGroupDescription(e.target.value)}
+                placeholder="Тема обсуждения, правила или ссылка..."
                 className="w-full px-3 py-2 bg-[var(--bg-input,#080c14)] border border-[var(--border-subtle,rgba(255,255,255,0.08))] rounded-xl text-xs text-[var(--text-primary,#f8fafc)] placeholder-[var(--text-muted,#64748b)] focus:outline-none focus:border-[var(--accent-default,#6366f1)] transition-colors"
               />
             </div>
@@ -277,7 +370,7 @@ export const NewChatModal: React.FC<NewChatModalProps> = ({ isOpen, onClose }) =
                       <button
                         type="button"
                         onClick={() => handleToggleUserSelection(u)}
-                        className="hover:text-rose-400 p-0.5"
+                        className="hover:text-rose-400 p-0.5 cursor-pointer"
                       >
                         <X className="w-3 h-3" />
                       </button>
@@ -303,8 +396,8 @@ export const NewChatModal: React.FC<NewChatModalProps> = ({ isOpen, onClose }) =
                 />
               </div>
 
-              <div className="max-h-40 overflow-y-auto space-y-1 pr-1">
-                {searchResults.map((user) => {
+              <div className="max-h-36 overflow-y-auto space-y-1 pr-1">
+                {(searchQuery ? searchResults : recentContacts).map((user) => {
                   const isSelected = selectedUsers.some((u) => u.id === user.id);
                   return (
                     <div
@@ -340,13 +433,18 @@ export const NewChatModal: React.FC<NewChatModalProps> = ({ isOpen, onClose }) =
               </div>
             </div>
 
-            <div className="pt-2 flex justify-end gap-2 border-t border-[var(--border-subtle,rgba(255,255,255,0.08))]">
-              <Button type="button" variant="ghost" onClick={onClose}>
-                Отмена
-              </Button>
-              <Button type="submit" loading={creatingGroup} disabled={!groupName.trim()}>
-                Создать группу
-              </Button>
+            <div className="pt-2 flex flex-col sm:flex-row items-center justify-between gap-2 border-t border-[var(--border-subtle,rgba(255,255,255,0.08))]">
+              <div className="text-[11px] text-amber-400/90 font-medium">
+                {missingRequirementText}
+              </div>
+              <div className="flex items-center gap-2 w-full sm:w-auto justify-end">
+                <Button type="button" variant="ghost" onClick={onClose}>
+                  Отмена
+                </Button>
+                <Button type="submit" loading={creatingGroup} disabled={!isGroupValid}>
+                  Создать группу
+                </Button>
+              </div>
             </div>
           </form>
         )}

@@ -56,15 +56,24 @@ conversationsRouter.get('/', requireAuth, async (req: AuthenticatedRequest, res)
       let chatAvatar = conv.avatar_url;
       let partner: any = null;
 
-      if (Number(conv.is_saved) === 1 || conv.is_saved === true) {
+      const isSaved =
+        Boolean(Number(conv.is_saved)) ||
+        conv.is_saved === true ||
+        conv.name === 'Избранное' ||
+        (conv.avatar_url && conv.avatar_url.includes('saved_messages_star'));
+
+      if (isSaved) {
         chatName = 'Избранное';
         chatAvatar = '';
         partner = null;
       } else if (conv.type === 'direct') {
-        partner = members.find((m) => m.id !== currentUserId) || members[0];
+        partner = members.find((m) => m.id !== currentUserId) || null;
         if (partner) {
-          chatName = partner.display_name;
-          chatAvatar = partner.avatar_url;
+          chatName = partner.display_name || partner.username || 'Собеседник';
+          chatAvatar = partner.avatar_url || '';
+        } else {
+          chatName = 'Избранное';
+          chatAvatar = '';
         }
       }
 
@@ -117,7 +126,7 @@ conversationsRouter.get('/', requireAuth, async (req: AuthenticatedRequest, res)
         members,
         pinnedMessageId: conv.pinned_message_id || null,
         pinnedMessage,
-        isSaved: Boolean(Number(conv.is_saved)) || conv.is_saved === true,
+        isSaved: isSaved || (conv.type === 'direct' && !partner),
         isChannel: Boolean(Number(conv.is_channel)) || conv.is_channel === true,
         isPinned: Boolean(Number(conv.is_pinned)) || conv.is_pinned === true,
         isMuted: Boolean(Number(conv.is_muted)) || conv.is_muted === true,
@@ -140,7 +149,17 @@ conversationsRouter.get('/', requireAuth, async (req: AuthenticatedRequest, res)
       };
     }));
 
-    res.json(result);
+    // Ensure only one "isSaved" conversation is returned to the user
+    let seenSaved = false;
+    const deduplicatedResult = result.filter((conv) => {
+      if (conv.isSaved) {
+        if (seenSaved) return false;
+        seenSaved = true;
+      }
+      return true;
+    });
+
+    res.json(deduplicatedResult);
   } catch (err) {
     console.error('Fetch conversations error:', err);
     res.status(500).json({ error: 'Failed to fetch conversations' });
@@ -213,7 +232,7 @@ conversationsRouter.post('/direct', requireAuth, async (req: AuthenticatedReques
 // Create group conversation
 conversationsRouter.post('/group', requireAuth, async (req: AuthenticatedRequest, res) => {
   const currentUserId = req.user!.userId;
-  const { name, avatarUrl, memberIds = [] } = req.body;
+  const { name, avatarUrl, description, memberIds = [] } = req.body;
 
   if (!name || name.trim() === '') {
     return res.status(400).json({ error: 'Group name is required' });
@@ -227,9 +246,9 @@ conversationsRouter.post('/group', requireAuth, async (req: AuthenticatedRequest
 
     await db.transaction(async () => {
       await db.run(`
-        INSERT INTO conversations (id, type, name, avatar_url, created_by, created_at, updated_at)
-        VALUES (?, 'group', ?, ?, ?, ?, ?)
-      `, convId, name.trim(), groupAvatar, currentUserId, now, now);
+        INSERT INTO conversations (id, type, name, avatar_url, description, created_by, created_at, updated_at)
+        VALUES (?, 'group', ?, ?, ?, ?, ?, ?)
+      `, convId, name.trim(), groupAvatar, (description || '').trim(), currentUserId, now, now);
 
       for (const mId of uniqueMembers) {
         await db.run(`
@@ -401,10 +420,16 @@ conversationsRouter.post('/saved', requireAuth, async (req: AuthenticatedRequest
 
   try {
     const existing = await db.get<any>(`
-      SELECT id FROM conversations WHERE created_by = ? AND is_saved = 1 LIMIT 1
+      SELECT id, is_saved FROM conversations 
+      WHERE created_by = ? AND (is_saved = 1 OR name = 'Избранное' OR avatar_url LIKE '%saved_messages_star%')
+      ORDER BY is_saved DESC, created_at ASC
+      LIMIT 1
     `, currentUserId);
 
     if (existing) {
+      if (!existing.is_saved) {
+        await db.run('UPDATE conversations SET is_saved = 1, type = ? WHERE id = ?', 'direct', existing.id);
+      }
       return res.json({ id: existing.id, isNew: false });
     }
 

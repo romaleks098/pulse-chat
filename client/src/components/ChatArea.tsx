@@ -383,7 +383,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
               isSaved={isSaved}
               isChannel={isChannel}
               isGroup={isGroup}
-              isOnline={Boolean(isPartnerOnline)}
+              isOnline={!isSaved && Boolean(isPartnerOnline)}
             />
 
             <div className="min-w-0">
