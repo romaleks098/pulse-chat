@@ -97,7 +97,8 @@ git push origin main:master
 
 ### Версия 1.8.1
 **Дата:** 24 октября 2026  
-**Категория:** Hotfix / Stability / React Rules of Hooks / Error Boundary  
+**Категория:** Stable Release / Hotfix / Stability / React Rules of Hooks / Error Boundary  
+**Статус:** Стабильный релиз (Stable Production Release, git tag `v1.8.1`)  
 **Устранение критического бага: Чёрный экран через 1 секунду после входа (коммит 559a283):**
 
 1. **Корневая причина №1 (Нарушение Rules of Hooks в `ChatArea.tsx`):**

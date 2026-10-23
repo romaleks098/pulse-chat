@@ -85,7 +85,8 @@ git push origin main:master
 
 ### Версия 1.8.1
 **Дата:** 2026-10-24  
-**Категория:** Hotfix / Стабильность / React Rules of Hooks / ErrorBoundary  
+**Категория:** Stable Release / Hotfix / Стабильность / React Rules of Hooks / ErrorBoundary  
+**Статус:** Стабильный релиз (Stable Production Release, git tag `v1.8.1`)  
 **Суть обновления:**  
 Срочное устранение критического сбоя продакшена (чёрный экран через 1 секунду после авторизации после деплоя коммита 559a283):
 
