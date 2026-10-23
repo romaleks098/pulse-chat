@@ -48,6 +48,14 @@ app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok', time: new Date().toISOString() });
 });
 
+app.get('/healthz', (_req, res) => {
+  res.json({ status: 'ok', time: new Date().toISOString() });
+});
+
+app.get('/api/ping', (_req, res) => {
+  res.json({ status: 'pong', time: new Date().toISOString() });
+});
+
 // Serve frontend in production (Single Unified Fullstack Service)
 const clientDist = path.join(__dirname, '..', '..', 'client', 'dist');
 if (fs.existsSync(clientDist)) {
@@ -74,4 +82,19 @@ setupSocketServer(io);
 const PORT = Number(process.env.PORT) || 3001;
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 PulseChat Server listening on http://0.0.0.0:${PORT}`);
+
+  // Keep-alive self-ping mechanism to keep Render free tier awake 24/7
+  const PUBLIC_URL = process.env.RENDER_EXTERNAL_URL || 'https://pulse-chat-qel7.onrender.com';
+  console.log(`[Keep-Alive] Service active for: ${PUBLIC_URL}`);
+
+  // Ping every 10 minutes (Render sleeps after 15 minutes of inactivity)
+  setInterval(async () => {
+    try {
+      const pingUrl = `${PUBLIC_URL}/api/health`;
+      const res = await fetch(pingUrl);
+      console.log(`[Keep-Alive] Pinged ${pingUrl} - Status: ${res.status}`);
+    } catch (err: any) {
+      console.error('[Keep-Alive] Ping failed:', err.message);
+    }
+  }, 10 * 60 * 1000);
 });
