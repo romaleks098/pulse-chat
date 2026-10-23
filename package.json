@@ -1,6 +1,7 @@
 {
   "name": "pulse-chat",
   "version": "1.0.0",
+  "type": "module",
   "private": true,
   "scripts": {
     "dev:server": "cd server && npm run dev",
@@ -12,7 +13,8 @@
     "start": "cd server && node dist/index.js",
     "desktop": "cd desktop && npm start",
     "cap:sync": "cd client && npm run cap:sync",
-    "cap:android": "cd client && npm run cap:android"
+    "cap:android": "cd client && npm run cap:android",
+    "check:secrets": "node scripts/check_secrets.js"
   },
   "devDependencies": {
     "concurrently": "^9.0.1"

@@ -1,6 +1,8 @@
 node_modules/
 dist/
 .env
+.env.*
+!.env.example
 *.log
 messenger.db*
 server/data/*.db*
@@ -11,3 +13,9 @@ client/android/app/build
 desktop/client_dist/
 release-windows/
 *.apk
+*.keystore
+*.jks
+*.p8
+*.p12
+*.key
+*.pem
