@@ -1,0 +1,313 @@
+import { Router } from 'express';
+import crypto from 'crypto';
+import { db } from '../db.js';
+import { requireAuth, AuthenticatedRequest } from '../auth.js';
+
+export const conversationsRouter = Router();
+
+// List user conversations
+conversationsRouter.get('/', requireAuth, (req: AuthenticatedRequest, res) => {
+  const currentUserId = req.user!.userId;
+
+  try {
+    const rows = db.prepare(`
+      SELECT 
+        c.id,
+        c.type,
+        c.name,
+        c.avatar_url,
+        c.updated_at,
+        c.created_at
+      FROM conversations c
+      JOIN conversation_members cm ON cm.conversation_id = c.id
+      WHERE cm.user_id = ?
+      ORDER BY c.updated_at DESC
+    `).all(currentUserId) as any[];
+
+    const result = rows.map((conv) => {
+      // Get all members for this conversation
+      const members = db.prepare(`
+        SELECT u.id, u.username, u.display_name, u.avatar_url, u.status_text, u.last_seen, cm.role
+        FROM conversation_members cm
+        JOIN users u ON u.id = cm.user_id
+        WHERE cm.conversation_id = ?
+      `).all(conv.id) as any[];
+
+      // Get last message
+      const lastMessage = db.prepare(`
+        SELECT m.id, m.sender_id, m.text, m.type, m.file_name, m.created_at, m.is_deleted, u.display_name as sender_name
+        FROM messages m
+        JOIN users u ON u.id = m.sender_id
+        WHERE m.conversation_id = ?
+        ORDER BY m.created_at DESC
+        LIMIT 1
+      `).get(conv.id) as any;
+
+      let chatName = conv.name;
+      let chatAvatar = conv.avatar_url;
+      let partner: any = null;
+
+      if (conv.type === 'direct') {
+        partner = members.find((m) => m.id !== currentUserId) || members[0];
+        if (partner) {
+          chatName = partner.display_name;
+          chatAvatar = partner.avatar_url;
+        }
+      }
+
+      return {
+        id: conv.id,
+        type: conv.type,
+        name: chatName,
+        avatarUrl: chatAvatar,
+        partner,
+        members,
+        lastMessage: lastMessage
+          ? {
+              id: lastMessage.id,
+              senderId: lastMessage.sender_id,
+              senderName: lastMessage.sender_name,
+              text: lastMessage.is_deleted ? 'Сообщение удалено' : lastMessage.text,
+              type: lastMessage.type,
+              fileName: lastMessage.file_name,
+              createdAt: lastMessage.created_at,
+            }
+          : null,
+        updatedAt: conv.updated_at,
+      };
+    });
+
+    res.json(result);
+  } catch (err) {
+    console.error('List conversations error:', err);
+    res.status(500).json({ error: 'Failed to list conversations' });
+  }
+});
+
+// Create or get direct conversation
+conversationsRouter.post('/direct', requireAuth, (req: AuthenticatedRequest, res) => {
+  const currentUserId = req.user!.userId;
+  const { partnerId } = req.body;
+
+  if (!partnerId) {
+    return res.status(400).json({ error: 'partnerId is required' });
+  }
+
+  if (partnerId === currentUserId) {
+    return res.status(400).json({ error: 'Cannot create direct chat with yourself' });
+  }
+
+  try {
+    // Check if direct conversation already exists between these two users
+    const existing = db.prepare(`
+      SELECT c.id
+      FROM conversations c
+      JOIN conversation_members cm1 ON cm1.conversation_id = c.id AND cm1.user_id = ?
+      JOIN conversation_members cm2 ON cm2.conversation_id = c.id AND cm2.user_id = ?
+      WHERE c.type = 'direct'
+      LIMIT 1
+    `).get(currentUserId, partnerId) as any;
+
+    if (existing) {
+      return res.json({ id: existing.id, isNew: false });
+    }
+
+    // Create new direct conversation
+    const convId = crypto.randomUUID();
+    const now = new Date().toISOString();
+
+    const insertConv = db.transaction(() => {
+      db.prepare(`
+        INSERT INTO conversations (id, type, created_by, created_at, updated_at)
+        VALUES (?, 'direct', ?, ?, ?)
+      `).run(convId, currentUserId, now, now);
+
+      db.prepare(`
+        INSERT INTO conversation_members (conversation_id, user_id, role)
+        VALUES (?, ?, 'member'), (?, ?, 'member')
+      `).run(convId, currentUserId, convId, partnerId);
+    });
+
+    insertConv();
+
+    res.json({ id: convId, isNew: true });
+  } catch (err) {
+    console.error('Create direct chat error:', err);
+    res.status(500).json({ error: 'Failed to create direct chat' });
+  }
+});
+
+// Create group conversation
+conversationsRouter.post('/group', requireAuth, (req: AuthenticatedRequest, res) => {
+  const currentUserId = req.user!.userId;
+  const { name, avatarUrl, memberIds = [] } = req.body;
+
+  if (!name || name.trim() === '') {
+    return res.status(400).json({ error: 'Group name is required' });
+  }
+
+  try {
+    const convId = crypto.randomUUID();
+    const now = new Date().toISOString();
+    const groupAvatar = avatarUrl || `https://api.dicebear.com/7.x/identicon/svg?seed=${encodeURIComponent(name.trim())}`;
+
+    const uniqueMembers = Array.from(new Set([currentUserId, ...memberIds]));
+
+    const createGroup = db.transaction(() => {
+      db.prepare(`
+        INSERT INTO conversations (id, type, name, avatar_url, created_by, created_at, updated_at)
+        VALUES (?, 'group', ?, ?, ?, ?, ?)
+      `).run(convId, name.trim(), groupAvatar, currentUserId, now, now);
+
+      const stmt = db.prepare(`
+        INSERT INTO conversation_members (conversation_id, user_id, role)
+        VALUES (?, ?, ?)
+      `);
+
+      for (const mId of uniqueMembers) {
+        stmt.run(convId, mId, mId === currentUserId ? 'owner' : 'member');
+      }
+
+      // Add system message
+      const sysMsgId = crypto.randomUUID();
+      db.prepare(`
+        INSERT INTO messages (id, conversation_id, sender_id, text, type, created_at, updated_at)
+        VALUES (?, ?, ?, ?, 'text', ?, ?)
+      `).run(sysMsgId, convId, currentUserId, `Группа "${name.trim()}" создана`, now, now);
+    });
+
+    createGroup();
+
+    res.json({ id: convId, isNew: true });
+  } catch (err) {
+    console.error('Create group error:', err);
+    res.status(500).json({ error: 'Failed to create group' });
+  }
+});
+
+// Fetch messages for a conversation
+conversationsRouter.get('/:id/messages', requireAuth, (req: AuthenticatedRequest, res) => {
+  const currentUserId = req.user!.userId;
+  const convId = req.params.id;
+  const limit = Math.min(Number(req.query.limit) || 60, 100);
+  const before = req.query.before as string; // timestamp or id
+
+  try {
+    // Check membership
+    const isMember = db.prepare(`
+      SELECT 1 FROM conversation_members WHERE conversation_id = ? AND user_id = ?
+    `).get(convId, currentUserId);
+
+    if (!isMember) {
+      return res.status(403).json({ error: 'Not a member of this conversation' });
+    }
+
+    let query = `
+      SELECT 
+        m.id,
+        m.conversation_id,
+        m.sender_id,
+        m.text,
+        m.type,
+        m.file_url,
+        m.file_name,
+        m.file_size,
+        m.reply_to_id,
+        m.is_deleted,
+        m.created_at,
+        m.updated_at,
+        u.username as sender_username,
+        u.display_name as sender_name,
+        u.avatar_url as sender_avatar
+      FROM messages m
+      JOIN users u ON u.id = m.sender_id
+      WHERE m.conversation_id = ?
+    `;
+
+    const params: any[] = [convId];
+
+    if (before) {
+      query += ` AND m.created_at < ?`;
+      params.push(before);
+    }
+
+    query += ` ORDER BY m.created_at DESC LIMIT ?`;
+    params.push(limit);
+
+    const rawMessages = db.prepare(query).all(...params) as any[];
+
+    // Fetch reactions for these messages
+    const messageIds = rawMessages.map((m) => m.id);
+    let reactionsByMessage: Record<string, any[]> = {};
+
+    if (messageIds.length > 0) {
+      const placeholders = messageIds.map(() => '?').join(',');
+      const reactions = db.prepare(`
+        SELECT r.id, r.message_id, r.user_id, r.emoji, u.display_name as user_name
+        FROM reactions r
+        JOIN users u ON u.id = r.user_id
+        WHERE r.message_id IN (${placeholders})
+      `).all(...messageIds) as any[];
+
+      for (const r of reactions) {
+        if (!reactionsByMessage[r.message_id]) {
+          reactionsByMessage[r.message_id] = [];
+        }
+        reactionsByMessage[r.message_id].push({
+          userId: r.user_id,
+          userName: r.user_name,
+          emoji: r.emoji,
+        });
+      }
+    }
+
+    // Fetch reply messages details if any
+    const replyIds = rawMessages.filter((m) => m.reply_to_id).map((m) => m.reply_to_id);
+    let replyMap: Record<string, any> = {};
+
+    if (replyIds.length > 0) {
+      const placeholders = replyIds.map(() => '?').join(',');
+      const replies = db.prepare(`
+        SELECT m.id, m.text, m.type, m.file_name, u.display_name as sender_name
+        FROM messages m
+        JOIN users u ON u.id = m.sender_id
+        WHERE m.id IN (${placeholders})
+      `).all(...replyIds) as any[];
+
+      for (const r of replies) {
+        replyMap[r.id] = {
+          id: r.id,
+          senderName: r.sender_name,
+          text: r.text,
+          type: r.type,
+          fileName: r.file_name,
+        };
+      }
+    }
+
+    const messages = rawMessages.reverse().map((m) => ({
+      id: m.id,
+      conversationId: m.conversation_id,
+      senderId: m.sender_id,
+      senderUsername: m.sender_username,
+      senderName: m.sender_name,
+      senderAvatar: m.sender_avatar,
+      text: m.is_deleted ? 'Сообщение удалено' : m.text,
+      type: m.type,
+      fileUrl: m.file_url,
+      fileName: m.file_name,
+      fileSize: m.file_size,
+      replyTo: m.reply_to_id ? replyMap[m.reply_to_id] || null : null,
+      replyToId: m.reply_to_id,
+      isDeleted: Boolean(m.is_deleted),
+      createdAt: m.created_at,
+      updatedAt: m.updated_at,
+      reactions: reactionsByMessage[m.id] || [],
+    }));
+
+    res.json(messages);
+  } catch (err) {
+    console.error('Fetch messages error:', err);
+    res.status(500).json({ error: 'Failed to fetch messages' });
+  }
+});

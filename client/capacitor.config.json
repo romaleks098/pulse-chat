@@ -1,0 +1,8 @@
+{
+  "appId": "com.pulsechat.app",
+  "appName": "PulseChat",
+  "webDir": "dist",
+  "server": {
+    "cleartext": true
+  }
+}

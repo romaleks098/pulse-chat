@@ -1,0 +1,19 @@
+{
+  "name": "pulse-chat",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev:server": "cd server && npm run dev",
+    "dev:client": "cd client && npm run dev",
+    "dev": "concurrently -n \"SERVER,CLIENT\" -c \"blue,green\" \"npm run dev:server\" \"npm run dev:client\"",
+    "build": "npm run build:client && npm run build:server",
+    "build:client": "cd client && npm run build",
+    "build:server": "cd server && npm run build",
+    "start": "cd server && node dist/index.js",
+    "cap:sync": "cd client && npm run cap:sync",
+    "cap:android": "cd client && npm run cap:android"
+  },
+  "devDependencies": {
+    "concurrently": "^9.0.1"
+  }
+}

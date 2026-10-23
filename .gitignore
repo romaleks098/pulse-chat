@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.env
+*.log
+messenger.db*
+server/data/*.db*
+server/uploads/*
+!server/uploads/.gitkeep
+client/android/.gradle
+client/android/app/build
