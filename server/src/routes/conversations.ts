@@ -56,7 +56,7 @@ conversationsRouter.get('/', requireAuth, async (req: AuthenticatedRequest, res)
       let chatAvatar = conv.avatar_url;
       let partner: any = null;
 
-      if (conv.is_saved === 1) {
+      if (Number(conv.is_saved) === 1 || conv.is_saved === true) {
         chatName = 'Избранное';
         chatAvatar = '';
         partner = null;
@@ -117,11 +117,11 @@ conversationsRouter.get('/', requireAuth, async (req: AuthenticatedRequest, res)
         members,
         pinnedMessageId: conv.pinned_message_id || null,
         pinnedMessage,
-        isSaved: Boolean(conv.is_saved),
-        isChannel: Boolean(conv.is_channel),
-        isPinned: Boolean(conv.is_pinned),
-        isMuted: Boolean(conv.is_muted),
-        isArchived: Boolean(conv.is_archived),
+        isSaved: Boolean(Number(conv.is_saved)) || conv.is_saved === true,
+        isChannel: Boolean(Number(conv.is_channel)) || conv.is_channel === true,
+        isPinned: Boolean(Number(conv.is_pinned)) || conv.is_pinned === true,
+        isMuted: Boolean(Number(conv.is_muted)) || conv.is_muted === true,
+        isArchived: Boolean(Number(conv.is_archived)) || conv.is_archived === true,
         description: conv.description || '',
         unreadCount,
         lastMessage: lastMessage

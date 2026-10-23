@@ -91,6 +91,13 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   }, [token]);
 
+  // Load conversations whenever authenticated user is active
+  useEffect(() => {
+    if (currentUser && token) {
+      refreshConversations();
+    }
+  }, [currentUser, token, refreshConversations]);
+
   // Apply a message event into state
   const applyIncomingMessage = useCallback((newMsg: Message) => {
     if (newMsg.seq) {
@@ -176,44 +183,54 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
           const msgs = await api.getMessages(activeId);
           setMessages(msgs);
         }
-      } else if (res.events && res.events.length > 0) {
-        for (const evt of res.events) {
-          if (evt.eventType === 'message:new') {
-            applyIncomingMessage(evt.data);
-          } else if (evt.eventType === 'message:edit') {
-            setMessages((prev) =>
-              prev.map((m) => (m.id === evt.data.messageId ? { ...m, text: evt.data.text, updatedAt: evt.data.updatedAt } : m))
-            );
-          } else if (evt.eventType === 'message:delete') {
-            setMessages((prev) =>
-              prev.map((m) => (m.id === evt.data.messageId ? { ...m, isDeleted: true, text: 'Сообщение удалено' } : m))
-            );
-          } else if (evt.eventType === 'reactions:update') {
-            setMessages((prev) =>
-              prev.map((m) => (m.id === evt.data.messageId ? { ...m, reactions: evt.data.reactions } : m))
-            );
-          } else if (evt.eventType === 'conversation:pinned') {
-            setConversations((prev) =>
-              prev.map((c) => (c.id === evt.data.conversationId ? { ...c, pinnedMessageId: evt.data.pinnedMessageId, pinnedMessage: evt.data.pinnedMessage } : c))
-            );
-          } else if (evt.eventType === 'conversation:new') {
+      } else {
+        setConversations((prev) => {
+          if (prev.length === 0) {
             refreshConversations();
-          } else if (evt.eventType === 'conversation:read') {
-            if (currentUserRef.current && evt.data.userId === currentUserRef.current.id) {
-              setConversations((prev) =>
-                prev.map((c) => (c.id === evt.data.conversationId ? { ...c, unreadCount: 0 } : c))
+          }
+          return prev;
+        });
+
+        if (res.events && res.events.length > 0) {
+          for (const evt of res.events) {
+            if (evt.eventType === 'message:new') {
+              applyIncomingMessage(evt.data);
+            } else if (evt.eventType === 'message:edit') {
+              setMessages((prev) =>
+                prev.map((m) => (m.id === evt.data.messageId ? { ...m, text: evt.data.text, updatedAt: evt.data.updatedAt } : m))
               );
+            } else if (evt.eventType === 'message:delete') {
+              setMessages((prev) =>
+                prev.map((m) => (m.id === evt.data.messageId ? { ...m, isDeleted: true, text: 'Сообщение удалено' } : m))
+              );
+            } else if (evt.eventType === 'reactions:update') {
+              setMessages((prev) =>
+                prev.map((m) => (m.id === evt.data.messageId ? { ...m, reactions: evt.data.reactions } : m))
+              );
+            } else if (evt.eventType === 'conversation:pinned') {
+              setConversations((prev) =>
+                prev.map((c) => (c.id === evt.data.conversationId ? { ...c, pinnedMessageId: evt.data.pinnedMessageId, pinnedMessage: evt.data.pinnedMessage } : c))
+              );
+            } else if (evt.eventType === 'conversation:new') {
+              refreshConversations();
+            } else if (evt.eventType === 'conversation:read') {
+              if (currentUserRef.current && evt.data.userId === currentUserRef.current.id) {
+                setConversations((prev) =>
+                  prev.map((c) => (c.id === evt.data.conversationId ? { ...c, unreadCount: 0 } : c))
+                );
+              }
+            }
+
+            if (evt.seq > lastSeqRef.current) {
+              lastSeqRef.current = evt.seq;
+              localStorage.setItem('pulse_last_seq', String(evt.seq));
             }
           }
-
-          if (evt.seq > lastSeqRef.current) {
-            lastSeqRef.current = evt.seq;
-            localStorage.setItem('pulse_last_seq', String(evt.seq));
-          }
         }
-      } else if (res.latestSeq > lastSeqRef.current) {
-        lastSeqRef.current = res.latestSeq;
-        localStorage.setItem('pulse_last_seq', String(res.latestSeq));
+        if (res.latestSeq > lastSeqRef.current) {
+          lastSeqRef.current = res.latestSeq;
+          localStorage.setItem('pulse_last_seq', String(res.latestSeq));
+        }
       }
     } catch (err) {
       console.warn('Sync failed:', err);
@@ -289,6 +306,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
         setIsAuthInitializing(false);
         setConnectionStatus('connected');
         socketService.connect(token);
+        refreshConversations();
       } catch (err: any) {
         if (isCancelled) return;
         // If explicitly unauthorized (expired or revoked token), log out
@@ -432,10 +450,13 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   }, [currentUser]);
 
-  // Load messages when active conversation changes
+  // Load messages when active conversation changes or auth completes
   useEffect(() => {
     if (!activeConversationId) {
       setMessages([]);
+      return;
+    }
+    if (!token || !currentUser) {
       return;
     }
 
@@ -452,7 +473,22 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
       .finally(() => {
         setLoadingMessages(false);
       });
-  }, [activeConversationId]);
+  }, [activeConversationId, currentUser, token]);
+
+  // If conversations loaded and stored activeConversationId is not among them, adjust selection
+  useEffect(() => {
+    if (conversations.length > 0 && activeConversationId) {
+      const exists = conversations.some((c) => c.id === activeConversationId);
+      if (!exists) {
+        const saved = conversations.find((c) => c.isSaved);
+        if (saved) {
+          selectConversation(saved.id);
+        } else {
+          selectConversation(null);
+        }
+      }
+    }
+  }, [conversations, activeConversationId]);
 
   const login = async (credentials: { username: string; password: string }) => {
     const res = await api.login(credentials);
@@ -460,6 +496,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setToken(res.token);
     setCurrentUser(res.user);
     socketService.connect(res.token);
+    await refreshConversations();
   };
 
   const loginSocial = async (provider: 'telegram' | 'google' | 'github', data: any) => {
@@ -468,6 +505,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setToken(res.token);
     setCurrentUser(res.user);
     socketService.connect(res.token);
+    await refreshConversations();
   };
 
   const register = async (data: { username: string; password: string; displayName: string; avatarUrl?: string }) => {
@@ -476,6 +514,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setToken(res.token);
     setCurrentUser(res.user);
     socketService.connect(res.token);
+    await refreshConversations();
   };
 
   const logout = () => {
@@ -568,6 +607,11 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const openSavedMessages = async () => {
+    const existing = conversations.find((c) => c.isSaved);
+    if (existing) {
+      selectConversation(existing.id);
+      return;
+    }
     try {
       const res = await api.getOrCreateSavedMessages();
       await refreshConversations();

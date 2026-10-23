@@ -126,7 +126,7 @@ export const api = {
   },
 
   async getMessages(conversationId: string, before?: string): Promise<Message[]> {
-    const url = new URL(`${window.location.origin}${API_BASE}/conversations/${conversationId}/messages`);
+    const url = new URL(`${API_BASE}/conversations/${conversationId}/messages`, window.location.origin);
     if (before) url.searchParams.set('before', before);
     
     const token = localStorage.getItem('token');

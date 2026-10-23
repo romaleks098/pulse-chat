@@ -356,7 +356,7 @@ export function setupSocketServer(io: Server) {
     socket.on('call:start', async ({ conversationId, isVideo }: { conversationId: string; isVideo: boolean }) => {
       try {
         const conv = await db.get<any>('SELECT is_saved, type FROM conversations WHERE id = ?', conversationId);
-        if (!conv || conv.is_saved === 1) {
+        if (!conv || Number(conv.is_saved) === 1 || conv.is_saved === true) {
           socket.emit('call:error', { message: 'Нельзя позвонить в Избранное' });
           return;
         }

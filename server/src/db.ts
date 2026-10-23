@@ -110,8 +110,16 @@ function translatePlaceholders(sql: string): string {
   return sql.replace(/(\?)(?=(?:[^']*'[^']*')*[^']*$)/g, () => `$${paramIndex++}`);
 }
 
+function flattenParams(params: any[]): any[] {
+  if (params.length === 1 && Array.isArray(params[0])) {
+    return params[0];
+  }
+  return params;
+}
+
 function normalizeParams(params: any[]): any[] {
-  return params.map((p) => {
+  const flat = flattenParams(params);
+  return flat.map((p) => {
     if (p === undefined) return null;
     return p;
   });
