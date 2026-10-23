@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useChat } from '../context/ChatContext';
-import { MessageSquare, Lock, User as UserIcon, Sparkles, ArrowRight, X } from 'lucide-react';
+import { api } from '../services/api';
+import { MessageSquare, Lock, User as UserIcon, Sparkles, ArrowRight, X, Key } from 'lucide-react';
 
 const AVATAR_PRESETS = [
   'https://api.dicebear.com/7.x/bottts/svg?seed=Felix',
@@ -21,10 +22,25 @@ export const AuthScreen: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
+  // Providers config
+  const [providers, setProviders] = useState({ telegramBotName: '', googleClientId: '', githubClientId: '' });
+
   // Social modal state
   const [socialModal, setSocialModal] = useState<'telegram' | 'google' | 'github' | null>(null);
   const [socialInput, setSocialInput] = useState('');
   const [socialName, setSocialName] = useState('');
+
+  useEffect(() => {
+    api.getAuthProviders().then((res) => {
+      setProviders(res);
+    });
+
+    const urlParams = new URLSearchParams(window.location.search);
+    const oauthError = urlParams.get('oauth_error');
+    if (oauthError) {
+      setError(`Ошибка входа через социальную сеть: ${oauthError}`);
+    }
+  }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -49,7 +65,35 @@ export const AuthScreen: React.FC = () => {
     }
   };
 
-  const handleSocialConnect = async (provider: 'telegram' | 'google' | 'github') => {
+  const handleGoogleClick = () => {
+    if (providers.googleClientId) {
+      // Real redirect to accounts.google.com in browser!
+      window.location.href = '/api/auth/google';
+    } else {
+      setSocialModal('google');
+      setSocialInput('');
+      setSocialName('');
+    }
+  };
+
+  const handleGithubClick = () => {
+    if (providers.githubClientId) {
+      // Real redirect to github.com in browser!
+      window.location.href = '/api/auth/github';
+    } else {
+      setSocialModal('github');
+      setSocialInput('');
+      setSocialName('');
+    }
+  };
+
+  const handleTelegramClick = () => {
+    setSocialModal('telegram');
+    setSocialInput('');
+    setSocialName('');
+  };
+
+  const handleQuickConnect = async (provider: 'telegram' | 'google' | 'github') => {
     setError(null);
     setLoading(true);
 
@@ -67,7 +111,7 @@ export const AuthScreen: React.FC = () => {
           avatarUrl: `https://api.dicebear.com/7.x/bottts/svg?seed=tg_${handle}`,
         };
       } else if (provider === 'google') {
-        const email = cleanInput || 'user@gmail.com';
+        const email = cleanInput || 'alex.google@gmail.com';
         const name = socialName.trim() || email.split('@')[0];
         payload = {
           id: `google_${email.replace(/[^a-zA-Z0-9]/g, '_')}`,
@@ -148,11 +192,7 @@ export const AuthScreen: React.FC = () => {
             {/* Telegram Button */}
             <button
               type="button"
-              onClick={() => {
-                setSocialModal('telegram');
-                setSocialInput('');
-                setSocialName('');
-              }}
+              onClick={handleTelegramClick}
               className="py-2.5 px-3 bg-[#229ED9]/15 hover:bg-[#229ED9]/25 border border-[#229ED9]/30 rounded-xl flex items-center justify-center gap-2 text-xs font-semibold text-[#229ED9] hover:text-white transition-all cursor-pointer group"
             >
               <svg className="w-4 h-4 fill-current shrink-0" viewBox="0 0 24 24">
@@ -164,11 +204,7 @@ export const AuthScreen: React.FC = () => {
             {/* Google Button */}
             <button
               type="button"
-              onClick={() => {
-                setSocialModal('google');
-                setSocialInput('');
-                setSocialName('');
-              }}
+              onClick={handleGoogleClick}
               className="py-2.5 px-3 bg-white/10 hover:bg-white/15 border border-white/20 rounded-xl flex items-center justify-center gap-2 text-xs font-semibold text-white transition-all cursor-pointer group"
             >
               <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24">
@@ -183,11 +219,7 @@ export const AuthScreen: React.FC = () => {
             {/* GitHub Button */}
             <button
               type="button"
-              onClick={() => {
-                setSocialModal('github');
-                setSocialInput('');
-                setSocialName('');
-              }}
+              onClick={handleGithubClick}
               className="py-2.5 px-3 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-xl flex items-center justify-center gap-2 text-xs font-semibold text-slate-200 hover:text-white transition-all cursor-pointer group"
             >
               <svg className="w-4 h-4 fill-current shrink-0" viewBox="0 0 24 24">
@@ -306,18 +338,18 @@ export const AuthScreen: React.FC = () => {
         </div>
       </div>
 
-      {/* Social Login Modal */}
+      {/* Social OAuth Configuration & Quick Connect Modal */}
       {socialModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm animate-in fade-in duration-200">
-          <div className="w-full max-w-sm bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-2xl relative text-white">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="w-full max-w-md bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-2xl relative text-white">
             <button
               onClick={() => setSocialModal(null)}
-              className="absolute right-4 top-4 p-1.5 text-slate-400 hover:text-white rounded-full hover:bg-slate-800"
+              className="absolute right-4 top-4 p-1.5 text-slate-400 hover:text-white rounded-full hover:bg-slate-800 transition-colors"
             >
               <X className="w-5 h-5" />
             </button>
 
-            <div className="text-center mb-5">
+            <div className="text-center mb-4">
               <div
                 className={`w-14 h-14 rounded-2xl mx-auto flex items-center justify-center mb-3 shadow-lg ${
                   socialModal === 'telegram'
@@ -349,19 +381,26 @@ export const AuthScreen: React.FC = () => {
               <h3 className="text-lg font-bold">
                 Вход через {socialModal === 'telegram' ? 'Telegram' : socialModal === 'google' ? 'Google' : 'GitHub'}
               </h3>
-              <p className="text-xs text-slate-400 mt-1">
-                {socialModal === 'telegram'
-                  ? 'Введите ваш юзернейм в Telegram'
-                  : socialModal === 'google'
-                  ? 'Введите ваш Google адрес'
-                  : 'Введите ваш GitHub никнейм'}
+            </div>
+
+            {/* Why modal appears notice */}
+            <div className="bg-slate-950 p-3.5 rounded-2xl border border-slate-800 text-xs text-slate-300 space-y-2 mb-4">
+              <div className="font-semibold text-indigo-400 flex items-center gap-1.5">
+                <Key className="w-3.5 h-3.5" />
+                <span>Почему нужен Client ID для редиректа в браузер?</span>
+              </div>
+              <p className="text-[11px] text-slate-400 leading-relaxed">
+                {socialModal === 'google' && 'Google запрещает перенаправлять пользователей без зарегистрированного бесплатного Client ID в Google Cloud Console (защита от фишинга).'}
+                {socialModal === 'github' && 'GitHub требует зарегистрировать OAuth App в Developer Settings и указать Client ID и Client Secret.'}
+                {socialModal === 'telegram' && 'Telegram требует создание бота через @BotFather для проверки криптографической подписи.'}
               </p>
             </div>
 
+            {/* Quick Login Section */}
             <div className="space-y-3 mb-4">
               <div>
                 <label className="block text-[11px] font-semibold text-slate-300 uppercase tracking-wider mb-1">
-                  {socialModal === 'telegram' ? 'Telegram Юзернейм' : socialModal === 'google' ? 'Google Email' : 'GitHub Никнейм'}
+                  {socialModal === 'telegram' ? 'Ваш ник в Telegram' : socialModal === 'google' ? 'Ваша почта Google' : 'Ваш логин GitHub'}
                 </label>
                 <input
                   type="text"
@@ -375,20 +414,20 @@ export const AuthScreen: React.FC = () => {
 
               <div>
                 <label className="block text-[11px] font-semibold text-slate-300 uppercase tracking-wider mb-1">
-                  Ваше имя в профиле (необязательно)
+                  Отображаемое имя (необязательно)
                 </label>
                 <input
                   type="text"
                   value={socialName}
                   onChange={(e) => setSocialName(e.target.value)}
-                  placeholder="Павел Дуров"
+                  placeholder="Имя Фамилия"
                   className="w-full px-3.5 py-2 bg-slate-950 border border-slate-800 rounded-xl text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 text-sm"
                 />
               </div>
             </div>
 
             <button
-              onClick={() => handleSocialConnect(socialModal)}
+              onClick={() => handleQuickConnect(socialModal)}
               disabled={loading}
               className={`w-full py-2.5 rounded-xl font-medium text-sm flex items-center justify-center gap-2 transition-all cursor-pointer ${
                 socialModal === 'telegram'
@@ -401,7 +440,10 @@ export const AuthScreen: React.FC = () => {
               {loading ? (
                 <div className="w-4 h-4 border-2 border-white/20 border-t-white rounded-full animate-spin" />
               ) : (
-                <span>Подтвердить вход</span>
+                <>
+                  <span>Войти в аккаунт</span>
+                  <ArrowRight className="w-4 h-4" />
+                </>
               )}
             </button>
           </div>

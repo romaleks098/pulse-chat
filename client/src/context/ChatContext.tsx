@@ -51,6 +51,17 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Check URL query parameters for OAuth callback token
+  useEffect(() => {
+    const urlParams = new URLSearchParams(window.location.search);
+    const urlToken = urlParams.get('token');
+    if (urlToken) {
+      localStorage.setItem('token', urlToken);
+      setToken(urlToken);
+      window.history.replaceState({}, document.title, window.location.pathname);
+    }
+  }, []);
+
   // Initialize Auth
   useEffect(() => {
     if (token) {

@@ -36,9 +36,14 @@ function createWindow() {
   });
 
   req.on('error', () => {
-    // If dev server is not active, load compiled production build
-    const indexPath = path.join(__dirname, '..', 'client', 'dist', 'index.html');
-    mainWindow.loadFile(indexPath);
+    const fs = require('fs');
+    const localDist = path.join(__dirname, 'client_dist', 'index.html');
+    const parentDist = path.join(__dirname, '..', 'client', 'dist', 'index.html');
+    if (fs.existsSync(localDist)) {
+      mainWindow.loadFile(localDist);
+    } else {
+      mainWindow.loadFile(parentDist);
+    }
   });
 
   mainWindow.once('ready-to-show', () => {

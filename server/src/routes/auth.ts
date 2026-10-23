@@ -184,6 +184,212 @@ authRouter.get('/providers', (_req, res) => {
   });
 });
 
+// Helper for upserting OAuth user and returning token
+function upsertOAuthUser(provider: string, providerId: string, usernameBase: string, displayName: string, avatarUrl: string): string {
+  let user = db.prepare('SELECT * FROM users WHERE auth_provider = ? AND provider_id = ?').get(provider, providerId) as any;
+
+  if (!user) {
+    let cleanUsername = usernameBase.trim().toLowerCase().replace(/[^a-z0-9_]/g, '');
+    if (cleanUsername.length < 3) cleanUsername = `${provider}_user`;
+
+    let finalUsername = cleanUsername;
+    let counter = 1;
+    while (db.prepare('SELECT 1 FROM users WHERE username = ?').get(finalUsername)) {
+      finalUsername = `${cleanUsername}_${counter++}`;
+    }
+
+    const userId = crypto.randomUUID();
+    const passwordHash = hashPassword(crypto.randomBytes(32).toString('hex'));
+
+    db.prepare(`
+      INSERT INTO users (id, username, display_name, password_hash, avatar_url, auth_provider, provider_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(userId, finalUsername, displayName.trim() || finalUsername, passwordHash, avatarUrl, provider, providerId);
+
+    user = { id: userId, username: finalUsername };
+  }
+
+  return signToken({ userId: user.id, username: user.username });
+}
+
+// -------------------------------------------------------------
+// REAL OAUTH 2.0 BROWSER REDIRECT FLOWS
+// -------------------------------------------------------------
+
+// 1. GitHub OAuth Redirect
+authRouter.get('/github', (req, res) => {
+  const clientId = process.env.GITHUB_CLIENT_ID;
+  if (!clientId) {
+    return res.redirect('/?oauth_config=github');
+  }
+
+  const host = req.get('host');
+  const protocol = req.protocol === 'https' || req.headers['x-forwarded-proto'] === 'https' ? 'https' : 'http';
+  const redirectUri = encodeURIComponent(`${protocol}://${host}/api/auth/github/callback`);
+
+  res.redirect(`https://github.com/login/oauth/authorize?client_id=${clientId}&redirect_uri=${redirectUri}&scope=read:user%20user:email`);
+});
+
+authRouter.get('/github/callback', async (req, res) => {
+  const code = req.query.code as string;
+  const clientId = process.env.GITHUB_CLIENT_ID;
+  const clientSecret = process.env.GITHUB_CLIENT_SECRET;
+
+  if (!code || !clientId || !clientSecret) {
+    return res.redirect('/?oauth_error=github_failed');
+  }
+
+  try {
+    // Exchange code for access token
+    const tokenRes = await fetch('https://github.com/login/oauth/access_token', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
+      body: JSON.stringify({
+        client_id: clientId,
+        client_secret: clientSecret,
+        code,
+      }),
+    });
+    const tokenData = await tokenRes.json() as any;
+    if (!tokenData.access_token) throw new Error('No access token');
+
+    // Fetch GitHub user profile
+    const userRes = await fetch('https://api.github.com/user', {
+      headers: {
+        Authorization: `Bearer ${tokenData.access_token}`,
+        'User-Agent': 'PulseChat-App',
+      },
+    });
+    const ghUser = await userRes.json() as any;
+
+    const token = upsertOAuthUser(
+      'github',
+      String(ghUser.id),
+      ghUser.login,
+      ghUser.name || ghUser.login,
+      ghUser.avatar_url || `https://github.com/${ghUser.login}.png`
+    );
+
+    res.redirect(`/?token=${token}`);
+  } catch (err) {
+    console.error('GitHub OAuth error:', err);
+    res.redirect('/?oauth_error=github_failed');
+  }
+});
+
+// 2. Google OAuth 2.0 Redirect
+authRouter.get('/google', (req, res) => {
+  const clientId = process.env.GOOGLE_CLIENT_ID;
+  if (!clientId) {
+    return res.redirect('/?oauth_config=google');
+  }
+
+  const host = req.get('host');
+  const protocol = req.protocol === 'https' || req.headers['x-forwarded-proto'] === 'https' ? 'https' : 'http';
+  const redirectUri = encodeURIComponent(`${protocol}://${host}/api/auth/google/callback`);
+
+  res.redirect(
+    `https://accounts.google.com/o/oauth2/v2/auth?client_id=${clientId}&redirect_uri=${redirectUri}&response_type=code&scope=openid%20profile%20email&access_type=offline`
+  );
+});
+
+authRouter.get('/google/callback', async (req, res) => {
+  const code = req.query.code as string;
+  const clientId = process.env.GOOGLE_CLIENT_ID;
+  const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
+
+  if (!code || !clientId || !clientSecret) {
+    return res.redirect('/?oauth_error=google_failed');
+  }
+
+  try {
+    const host = req.get('host');
+    const protocol = req.protocol === 'https' || req.headers['x-forwarded-proto'] === 'https' ? 'https' : 'http';
+    const redirectUri = `${protocol}://${host}/api/auth/google/callback`;
+
+    // Exchange authorization code for tokens
+    const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        code,
+        client_id: clientId,
+        client_secret: clientSecret,
+        redirect_uri: redirectUri,
+        grant_type: 'authorization_code',
+      }),
+    });
+    const tokenData = await tokenRes.json() as any;
+    if (!tokenData.access_token) throw new Error('No Google token');
+
+    // Fetch user profile from Google
+    const profileRes = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
+      headers: { Authorization: `Bearer ${tokenData.access_token}` },
+    });
+    const gUser = await profileRes.json() as any;
+
+    const token = upsertOAuthUser(
+      'google',
+      gUser.id,
+      gUser.email ? gUser.email.split('@')[0] : `google_${gUser.id}`,
+      gUser.name || 'Google User',
+      gUser.picture || `https://api.dicebear.com/7.x/identicon/svg?seed=${gUser.id}`
+    );
+
+    res.redirect(`/?token=${token}`);
+  } catch (err) {
+    console.error('Google OAuth error:', err);
+    res.redirect('/?oauth_error=google_failed');
+  }
+});
+
+// 3. Telegram Login Widget Callback Redirect
+authRouter.get('/telegram/callback', (req, res) => {
+  const data = req.query as any;
+  const botToken = process.env.TELEGRAM_BOT_TOKEN;
+
+  if (!data.id) {
+    return res.redirect('/?oauth_error=telegram_failed');
+  }
+
+  // If bot token is configured, verify HMAC signature
+  if (botToken && data.hash) {
+    try {
+      const dataCheckArr: string[] = [];
+      for (const key of Object.keys(data).sort()) {
+        if (key !== 'hash') {
+          dataCheckArr.push(`${key}=${data[key]}`);
+        }
+      }
+      const dataCheckString = dataCheckArr.join('\n');
+      const secretKey = crypto.createHash('sha256').update(botToken).digest();
+      const calculatedHash = crypto.createHmac('sha256', secretKey).update(dataCheckString).digest('hex');
+
+      if (calculatedHash !== data.hash) {
+        return res.redirect('/?oauth_error=telegram_invalid_signature');
+      }
+    } catch (err) {
+      return res.redirect('/?oauth_error=telegram_failed');
+    }
+  }
+
+  const displayName = [data.first_name, data.last_name].filter(Boolean).join(' ') || data.username || 'Telegram User';
+  const avatarUrl = data.photo_url || `https://api.dicebear.com/7.x/bottts/svg?seed=tg_${data.id}`;
+
+  const token = upsertOAuthUser(
+    'telegram',
+    String(data.id),
+    data.username || `tg_${data.id}`,
+    displayName,
+    avatarUrl
+  );
+
+  res.redirect(`/?token=${token}`);
+});
+
 authRouter.get('/me', requireAuth, (req: AuthenticatedRequest, res) => {
   try {
     const user = db.prepare('SELECT id, username, display_name, avatar_url, status_text, last_seen, created_at FROM users WHERE id = ?').get(req.user!.userId) as any;
