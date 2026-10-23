@@ -11,3 +11,5 @@ services:
         value: 3001
       - key: JWT_SECRET
         generateValue: true
+      - key: DATABASE_URL
+        value: postgresql://postgres.xfowlymzhzmzyrjuylst:VJvcuEO3%7DURIhk45RD5K@aws-1-eu-west-3.pooler.supabase.com:5432/postgres
