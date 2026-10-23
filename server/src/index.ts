@@ -7,7 +7,7 @@ import fs from 'fs';
 import { Server } from 'socket.io';
 import { fileURLToPath } from 'url';
 import { initDatabase, isPostgres, db, getServerEpoch } from './db.js';
-import { authRouter } from './routes/auth.js';
+import { authRouter, setupTelegramWebhook } from './routes/auth.js';
 import { usersRouter } from './routes/users.js';
 import { conversationsRouter } from './routes/conversations.js';
 import { uploadRouter, uploadDir } from './routes/upload.js';
@@ -144,6 +144,9 @@ async function startServer() {
     // Keep-alive self-ping mechanism to keep Render free tier awake 24/7
     const PUBLIC_URL = process.env.RENDER_EXTERNAL_URL || 'https://pulse-chat-qel7.onrender.com';
     console.log(`[Keep-Alive] Service active for: ${PUBLIC_URL}`);
+
+    // Register Telegram webhook if bot token is provided
+    setupTelegramWebhook().catch((err) => console.error('[Telegram] Webhook error:', err));
 
     // Ping every 10 minutes (Render sleeps after 15 minutes of inactivity)
     setInterval(async () => {

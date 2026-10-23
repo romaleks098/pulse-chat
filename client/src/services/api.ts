@@ -145,6 +145,27 @@ export const api = {
     return result as { token: string; refreshToken?: string; user: User };
   },
 
+  async createTelegramBotSession(codeChallenge?: string, codeChallengeMethod?: string, redirectUri?: string, state?: string) {
+    const res = await fetch(`${API_BASE}/auth/telegram/bot/session`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        code_challenge: codeChallenge,
+        code_challenge_method: codeChallengeMethod,
+        redirect_uri: redirectUri,
+        state,
+      }),
+    });
+    if (!res.ok) throw new Error('Не удалось создать сессию Telegram бота');
+    return res.json() as Promise<{ token: string; botName: string; deepLink: string; expiresInSeconds: number }>;
+  },
+
+  async checkTelegramBotSession(token: string) {
+    const res = await fetch(`${API_BASE}/auth/telegram/bot/check?token=${encodeURIComponent(token)}`);
+    if (!res.ok) throw new Error('Не удалось проверить статус сессии');
+    return res.json() as Promise<{ status: 'pending' | 'completed' | 'expired'; code: string | null; user: any | null }>;
+  },
+
   async getAuthProviders(): Promise<{ telegramBotName: string; googleClientId: string; githubClientId: string }> {
     const res = await fetch(`${API_BASE}/auth/providers`);
     if (!res.ok) return { telegramBotName: '', googleClientId: '', githubClientId: '' };

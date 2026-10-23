@@ -46,6 +46,14 @@ export async function broadcastToConversationMembers(
   ioInstance.to(`conv_${conversationId}`).emit(event, payload);
 }
 
+/**
+ * Broadcast an authentication success event to the Telegram auth room
+ */
+export function notifyTelegramAuthSuccess(loginSessionToken: string, payload: any) {
+  if (!ioInstance) return;
+  ioInstance.to(`tg_auth:${loginSessionToken}`).emit('telegram_auth_success', payload);
+}
+
 export function setupSocketServer(io: Server) {
   ioInstance = io;
 
@@ -53,6 +61,10 @@ export function setupSocketServer(io: Server) {
   io.use((socket: AuthenticatedSocket, next) => {
     const token = socket.handshake.auth?.token || socket.handshake.headers?.authorization?.replace('Bearer ', '');
     if (!token) {
+      // Allow anonymous sockets for Telegram Bot auth listeners
+      if (socket.handshake.auth?.anonymousAuth) {
+        return next();
+      }
       return next(new Error('Authentication token required'));
     }
 
@@ -66,6 +78,16 @@ export function setupSocketServer(io: Server) {
   });
 
   io.on('connection', async (socket: AuthenticatedSocket) => {
+    if (!socket.user) {
+      // Anonymous socket for Telegram bot auth listener
+      socket.on('telegram_auth_listen', (loginToken: string) => {
+        if (typeof loginToken === 'string' && loginToken.length > 5) {
+          socket.join(`tg_auth:${loginToken}`);
+        }
+      });
+      return;
+    }
+
     const user = socket.user!;
     const userId = user.userId;
 

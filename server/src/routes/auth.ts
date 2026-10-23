@@ -1,6 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import crypto from 'crypto';
 import { db } from '../db.js';
+import { notifyTelegramAuthSuccess } from '../socket.js';
 import {
   hashPassword,
   verifyPassword,
@@ -923,6 +924,249 @@ authRouter.get('/telegram/callback', async (req, res) => {
     stateData.code_challenge_method,
     stateData.redirect_uri
   );
+});
+
+// ============================================================================
+// 8.5 TELEGRAM BOT IN-APP AUTH (One-time code + WebSocket confirmation)
+// ============================================================================
+
+interface TelegramBotSession {
+  token: string;
+  createdAt: number;
+  expiresAt: number;
+  status: 'pending' | 'completed' | 'expired';
+  codeChallenge?: string;
+  codeChallengeMethod?: string;
+  redirectUri?: string;
+  state?: string;
+  authCode?: string;
+  userId?: string;
+  user?: any;
+}
+
+const telegramBotSessions = new Map<string, TelegramBotSession>();
+
+// Cleanup expired sessions every minute
+setInterval(() => {
+  const now = Date.now();
+  for (const [token, sess] of telegramBotSessions.entries()) {
+    if (sess.expiresAt < now) {
+      telegramBotSessions.delete(token);
+    }
+  }
+}, 60 * 1000);
+
+async function sendTelegramMessage(chatId: number | string, text: string) {
+  const botToken = process.env.TELEGRAM_BOT_TOKEN;
+  if (!botToken) return;
+  try {
+    await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: chatId, text }),
+    });
+  } catch (e) {
+    console.error('Failed to send Telegram message:', e);
+  }
+}
+
+export async function setupTelegramWebhook() {
+  const botToken = process.env.TELEGRAM_BOT_TOKEN;
+  const publicUrl = process.env.PUBLIC_URL || process.env.RENDER_EXTERNAL_URL;
+  if (botToken && publicUrl && publicUrl.startsWith('https://')) {
+    try {
+      const webhookUrl = `${publicUrl.replace(/\/+$/, '')}/api/auth/telegram/webhook`;
+      const resp = await fetch(`https://api.telegram.org/bot${botToken}/setWebhook?url=${encodeURIComponent(webhookUrl)}`);
+      const data: any = await resp.json();
+      console.log(`[Telegram] Webhook registered at ${webhookUrl}:`, data?.ok ? 'OK' : data?.description);
+    } catch (e: any) {
+      console.error('[Telegram] Failed to register webhook:', e.message);
+    }
+  }
+}
+
+// 1. Request a new Telegram bot login session
+authRouter.post('/telegram/bot/session', authRateLimiter(20), async (req, res) => {
+  const { code_challenge, code_challenge_method, redirect_uri, state } = req.body;
+  const token = 'tg_' + crypto.randomUUID().replace(/-/g, '');
+  const expiresAt = Date.now() + 5 * 60 * 1000; // 5 minutes TTL
+
+  telegramBotSessions.set(token, {
+    token,
+    createdAt: Date.now(),
+    expiresAt,
+    status: 'pending',
+    codeChallenge: code_challenge,
+    codeChallengeMethod: code_challenge_method || 'S256',
+    redirectUri: redirect_uri,
+    state,
+  });
+
+  const botName = process.env.TELEGRAM_BOT_NAME || 'PulseChatBot';
+  const deepLink = `https://t.me/${botName}?start=${token}`;
+
+  res.json({
+    token,
+    botName,
+    deepLink,
+    expiresInSeconds: 300,
+  });
+});
+
+// 2. Telegram webhook for /start <token> messages from the bot
+authRouter.post('/telegram/webhook', async (req, res) => {
+  try {
+    const update = req.body;
+    const message = update?.message;
+    if (!message || !message.text) {
+      return res.sendStatus(200);
+    }
+
+    const text = message.text.trim();
+    const match = text.match(/^\/start\s+(tg_[a-zA-Z0-9_-]+|[a-zA-Z0-9_-]+)/i);
+    if (!match) {
+      return res.sendStatus(200);
+    }
+
+    const token = match[1];
+    const session = telegramBotSessions.get(token);
+    if (!session || session.expiresAt < Date.now()) {
+      if (process.env.TELEGRAM_BOT_TOKEN) {
+        await sendTelegramMessage(
+          message.chat.id,
+          '❌ Ссылка для авторизации устарела или недействительна. Пожалуйста, начните вход заново в приложении PulseChat.'
+        );
+      }
+      return res.sendStatus(200);
+    }
+
+    const tgUser = message.from;
+    if (!tgUser) {
+      return res.sendStatus(200);
+    }
+
+    const displayName = [tgUser.first_name, tgUser.last_name].filter(Boolean).join(' ') || tgUser.username || 'Telegram User';
+    const avatarUrl = `https://api.dicebear.com/7.x/bottts/svg?seed=tg_${tgUser.id}`;
+
+    const userId = await upsertOAuthUser(
+      'telegram',
+      String(tgUser.id),
+      tgUser.username || `tg_${tgUser.id}`,
+      displayName,
+      avatarUrl
+    );
+
+    const redirectUri = session.redirectUri || 'http://localhost:5173/auth/callback';
+    const authCode = await createAuthCode(
+      userId,
+      session.codeChallenge || '',
+      session.codeChallengeMethod || 'S256',
+      redirectUri
+    );
+
+    const userProfile = {
+      id: userId,
+      username: tgUser.username || `tg_${tgUser.id}`,
+      displayName,
+      avatarUrl,
+    };
+
+    session.status = 'completed';
+    session.authCode = authCode;
+    session.userId = userId;
+    session.user = userProfile;
+
+    // Send confirmation over WebSocket to the listening client socket
+    notifyTelegramAuthSuccess(token, {
+      code: authCode,
+      state: session.state || '',
+      user: userProfile,
+    });
+
+    if (process.env.TELEGRAM_BOT_TOKEN) {
+      await sendTelegramMessage(
+        message.chat.id,
+        '✅ Авторизация в PulseChat успешна! Вы можете вернуться в приложение.'
+      );
+    }
+
+    return res.sendStatus(200);
+  } catch (err) {
+    console.error('Telegram webhook error:', err);
+    return res.sendStatus(200);
+  }
+});
+
+// 3. Fallback / Test endpoint to confirm Telegram login without live webhook
+authRouter.post('/telegram/bot/mock-confirm', authRateLimiter(20), async (req, res) => {
+  const { token, id, username, first_name } = req.body;
+  if (!token) {
+    return res.status(400).json({ error: 'Token is required' });
+  }
+
+  const session = telegramBotSessions.get(token);
+  if (!session || session.expiresAt < Date.now()) {
+    return res.status(400).json({ error: 'Сессия устарела или не найдена' });
+  }
+
+  const tgId = id || '12345678';
+  const tgUser = username || 'test_user';
+  const displayName = first_name || 'Test User';
+  const avatarUrl = `https://api.dicebear.com/7.x/bottts/svg?seed=tg_${tgId}`;
+
+  const userId = await upsertOAuthUser(
+    'telegram',
+    String(tgId),
+    tgUser,
+    displayName,
+    avatarUrl
+  );
+
+  const redirectUri = session.redirectUri || 'http://localhost:5173/auth/callback';
+  const authCode = await createAuthCode(
+    userId,
+    session.codeChallenge || '',
+    session.codeChallengeMethod || 'S256',
+    redirectUri
+  );
+
+  const userProfile = {
+    id: userId,
+    username: tgUser,
+    displayName,
+    avatarUrl,
+  };
+
+  session.status = 'completed';
+  session.authCode = authCode;
+  session.userId = userId;
+  session.user = userProfile;
+
+  notifyTelegramAuthSuccess(token, {
+    code: authCode,
+    state: session.state || '',
+    user: userProfile,
+  });
+
+  res.json({ success: true, code: authCode, user: userProfile });
+});
+
+// 4. Poll fallback for client if WebSocket drops
+authRouter.get('/telegram/bot/check', async (req, res) => {
+  const token = req.query.token as string;
+  if (!token) {
+    return res.status(400).json({ error: 'Token is required' });
+  }
+  const session = telegramBotSessions.get(token);
+  if (!session || session.expiresAt < Date.now()) {
+    return res.status(404).json({ error: 'Сессия не найдена или истекла', status: 'expired' });
+  }
+
+  res.json({
+    status: session.status,
+    code: session.authCode || null,
+    user: session.user || null,
+  });
 });
 
 // ============================================================================

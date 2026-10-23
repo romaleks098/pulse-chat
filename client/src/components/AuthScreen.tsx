@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useChat } from '../context/ChatContext';
 import { MessageSquare, Lock, User as UserIcon, Sparkles, ArrowRight } from 'lucide-react';
 import { startOAuthPKCE } from '../utils/pkce';
+import { TelegramBotModal } from './TelegramBotModal';
 
 const AVATAR_PRESETS = [
   'https://api.dicebear.com/7.x/bottts/svg?seed=Felix',
@@ -15,7 +16,7 @@ const AVATAR_PRESETS = [
 ];
 
 export const AuthScreen: React.FC = () => {
-  const { login, register } = useChat();
+  const { login, register, applyAuthenticatedSession } = useChat();
   const [isLogin, setIsLogin] = useState(true);
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -23,6 +24,7 @@ export const AuthScreen: React.FC = () => {
   const [selectedAvatar, setSelectedAvatar] = useState(AVATAR_PRESETS[0]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [showTelegramModal, setShowTelegramModal] = useState(false);
 
   useEffect(() => {
     const urlParams = new URLSearchParams(window.location.search);
@@ -64,7 +66,7 @@ export const AuthScreen: React.FC = () => {
   };
 
   const handleTelegramClick = () => {
-    startOAuthPKCE('telegram');
+    setShowTelegramModal(true);
   };
 
   return (
@@ -266,6 +268,12 @@ export const AuthScreen: React.FC = () => {
           </p>
         </div>
       </div>
+
+      <TelegramBotModal
+        isOpen={showTelegramModal}
+        onClose={() => setShowTelegramModal(false)}
+        onSuccess={(data) => applyAuthenticatedSession(data)}
+      />
     </div>
   );
 };

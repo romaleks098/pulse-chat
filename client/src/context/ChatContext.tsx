@@ -21,6 +21,7 @@ interface ChatContextType {
   loadingMessages: boolean;
   connectionStatus: 'connected' | 'connecting' | 'disconnected';
   isAuthInitializing: boolean;
+  applyAuthenticatedSession: (data: { token: string; refreshToken?: string; user: any }) => Promise<void>;
   login: (credentials: { username: string; password: string }) => Promise<void>;
   loginSocial: (provider: 'telegram' | 'google' | 'github', data: any) => Promise<void>;
   register: (data: { username: string; password: string; displayName: string; avatarUrl?: string }) => Promise<void>;
@@ -534,6 +535,17 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   }, [conversations, activeConversationId]);
 
+  const applyAuthenticatedSession = useCallback(async (res: { token: string; refreshToken?: string; user: any }) => {
+    localStorage.setItem('token', res.token);
+    if (res.refreshToken) {
+      localStorage.setItem('pulse_refresh_token', res.refreshToken);
+    }
+    setToken(res.token);
+    setCurrentUser(res.user);
+    socketService.connect(res.token);
+    await refreshConversations();
+  }, [refreshConversations]);
+
   const login = async (credentials: { username: string; password: string }) => {
     const res = await api.login(credentials);
     localStorage.setItem('token', res.token);
@@ -854,6 +866,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
         loadingMessages,
         connectionStatus,
         isAuthInitializing,
+        applyAuthenticatedSession,
         login,
         loginSocial,
         register,
