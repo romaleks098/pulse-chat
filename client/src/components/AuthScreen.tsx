@@ -9,6 +9,8 @@ const AVATAR_PRESETS = [
   'https://api.dicebear.com/7.x/bottts/svg?seed=Milo',
   'https://api.dicebear.com/7.x/bottts/svg?seed=Zoe',
   'https://api.dicebear.com/7.x/bottts/svg?seed=Nova',
+  'https://api.dicebear.com/7.x/bottts/svg?seed=Alex',
+  'https://api.dicebear.com/7.x/bottts/svg?seed=Max',
 ];
 
 export const AuthScreen: React.FC = () => {
@@ -169,19 +171,19 @@ export const AuthScreen: React.FC = () => {
               <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-2">
                 Выберите аватар
               </label>
-              <div className="flex items-center justify-between gap-2 p-2 bg-slate-950/40 rounded-xl border border-slate-800">
+              <div className="grid grid-cols-4 gap-2 p-2 bg-slate-950/40 rounded-xl border border-slate-800">
                 {AVATAR_PRESETS.map((avatar, idx) => (
                   <button
                     key={idx}
                     type="button"
                     onClick={() => setSelectedAvatar(avatar)}
-                    className={`w-11 h-11 rounded-full p-0.5 transition-all ${
+                    className={`w-11 h-11 mx-auto rounded-full p-0.5 transition-all ${
                       selectedAvatar === avatar
                         ? 'ring-2 ring-indigo-500 scale-110 shadow-lg'
                         : 'opacity-60 hover:opacity-100 hover:scale-105'
                     }`}
                   >
-                    <img src={avatar} alt="Avatar" className="w-full h-full rounded-full bg-slate-800" />
+                    <img src={avatar} alt="Avatar" className="w-full h-full rounded-full bg-slate-800 object-cover" />
                   </button>
                 ))}
               </div>

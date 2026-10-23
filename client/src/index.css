@@ -10,15 +10,19 @@
     margin: 0;
     padding: 0;
     overflow: hidden;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
     -webkit-tap-highlight-color: transparent;
+    background-color: var(--bg-app, #090d16);
+    color: var(--text-primary, #f8fafc);
+    font-size: var(--font-size-base, 14px);
+    transition: background-color 180ms ease, color 180ms ease;
   }
 }
 
-/* Custom scrollbar for modern messenger look */
+/* Custom scrollbars that adapt to current theme */
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 5px;
+  height: 5px;
 }
 
 ::-webkit-scrollbar-track {
@@ -26,10 +30,63 @@
 }
 
 ::-webkit-scrollbar-thumb {
-  background: rgba(156, 163, 175, 0.4);
+  background: rgba(148, 163, 184, 0.25);
   border-radius: 9999px;
+  transition: background 150ms ease;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(156, 163, 175, 0.7);
+  background: rgba(148, 163, 184, 0.5);
 }
+
+/* Reduced motion support */
+@media (prefers-reduced-motion: reduce) {
+  *, ::before, ::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+[data-animations="reduced"] *, 
+[data-animations="reduced"] ::before, 
+[data-animations="reduced"] ::after {
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
+  scroll-behavior: auto !important;
+}
+
+/* PulseChat Wallpaper patterns */
+.chat-pattern-stars {
+  background-image: radial-gradient(rgba(255, 255, 255, 0.07) 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+
+.chat-pattern-geometry {
+  background-image: 
+    linear-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
+  background-size: 32px 32px;
+}
+
+.chat-pattern-subtle {
+  background-image: radial-gradient(circle at 50% 50%, rgba(99, 102, 241, 0.05), transparent 70%);
+}
+
+/* Tailwind helper classes mapped to design tokens */
+.bg-app { background-color: var(--bg-app); }
+.bg-sidebar { background-color: var(--bg-sidebar); }
+.bg-chat { background-color: var(--bg-chat); }
+.bg-surface { background-color: var(--bg-surface); }
+.bg-surface-hover:hover { background-color: var(--bg-surface-hover); }
+.bg-surface-active { background-color: var(--bg-surface-active); }
+.bg-input-theme { background-color: var(--bg-input); }
+.border-subtle { border-color: var(--border-subtle); }
+.text-theme-primary { color: var(--text-primary); }
+.text-theme-secondary { color: var(--text-secondary); }
+.text-theme-muted { color: var(--text-muted); }
+.bg-accent-theme { background-color: var(--accent-default); }
+.bg-accent-subtle { background-color: var(--accent-subtle); }
+.text-accent-theme { color: var(--accent-default); }

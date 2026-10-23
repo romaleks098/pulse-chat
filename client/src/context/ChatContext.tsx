@@ -46,6 +46,7 @@ interface ChatContextType {
   toggleMuteChat: (conversationId: string) => Promise<void>;
   toggleArchiveChat: (conversationId: string) => Promise<void>;
   clearConversation: (conversationId: string) => Promise<void>;
+  markConversationAsRead: (conversationId: string) => Promise<void>;
 }
 
 const ChatContext = createContext<ChatContextType | undefined>(undefined);
@@ -498,6 +499,17 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
+  const markConversationAsRead = async (conversationId: string) => {
+    try {
+      await api.markConversationAsRead(conversationId);
+      setConversations((prev) =>
+        prev.map((c) => (c.id === conversationId ? { ...c, unreadCount: 0 } : c))
+      );
+    } catch (err) {
+      console.error('Failed to mark conversation as read:', err);
+    }
+  };
+
   const activeConversation = conversations.find((c) => c.id === activeConversationId) || null;
   const activeTyping = activeConversationId && typingMap[activeConversationId]
     ? Object.values(typingMap[activeConversationId])
@@ -538,6 +550,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
         toggleMuteChat,
         toggleArchiveChat,
         clearConversation,
+        markConversationAsRead,
       }}
     >
       {children}

@@ -1,4 +1,6 @@
 import React, { useState, useEffect } from 'react';
+import { ThemeProvider } from './context/ThemeContext';
+import { ToastProvider } from './components/ui/Toast';
 import { ChatProvider, useChat } from './context/ChatContext';
 import { CallProvider } from './context/CallContext';
 import { AuthScreen } from './components/AuthScreen';
@@ -9,6 +11,7 @@ import { ConnectPhoneModal } from './components/ConnectPhoneModal';
 import { ProfileModal } from './components/ProfileModal';
 import { ImageViewerModal } from './components/ImageViewerModal';
 import { CallModal } from './components/CallModal';
+import { SettingsModal } from './components/SettingsModal';
 import { Download } from 'lucide-react';
 
 const MainLayout: React.FC = () => {
@@ -17,6 +20,7 @@ const MainLayout: React.FC = () => {
   const [isNewChatOpen, setIsNewChatOpen] = useState(false);
   const [isPhoneConnectOpen, setIsPhoneConnectOpen] = useState(false);
   const [isProfileOpen, setIsProfileOpen] = useState(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [activeImage, setActiveImage] = useState<{ url: string; fileName?: string } | null>(null);
 
   // PWA Install prompt state
@@ -49,7 +53,7 @@ const MainLayout: React.FC = () => {
   }
 
   return (
-    <div className="h-screen w-screen flex flex-col bg-slate-950 text-slate-100 overflow-hidden font-sans">
+    <div className="h-screen w-screen flex flex-col bg-[var(--bg-app,#090d16)] text-[var(--text-primary,#f8fafc)] overflow-hidden font-sans">
       {/* PWA Install Notification Bar */}
       {showInstallBanner && (
         <div className="bg-indigo-600 text-white px-4 py-2 text-xs flex items-center justify-between shadow-md shrink-0 z-30">
@@ -86,6 +90,7 @@ const MainLayout: React.FC = () => {
             onOpenNewChat={() => setIsNewChatOpen(true)}
             onOpenPhoneConnect={() => setIsPhoneConnectOpen(true)}
             onOpenProfile={() => setIsProfileOpen(true)}
+            onOpenSettings={() => setIsSettingsOpen(true)}
           />
         </div>
 
@@ -119,6 +124,12 @@ const MainLayout: React.FC = () => {
         onClose={() => setIsProfileOpen(false)}
       />
 
+      <SettingsModal
+        isOpen={isSettingsOpen}
+        onClose={() => setIsSettingsOpen(false)}
+        onOpenPhoneConnect={() => setIsPhoneConnectOpen(true)}
+      />
+
       <ImageViewerModal
         imageUrl={activeImage?.url || null}
         fileName={activeImage?.fileName}
@@ -132,10 +143,14 @@ const MainLayout: React.FC = () => {
 
 export default function App() {
   return (
-    <ChatProvider>
-      <CallProvider>
-        <MainLayout />
-      </CallProvider>
-    </ChatProvider>
+    <ThemeProvider>
+      <ToastProvider>
+        <ChatProvider>
+          <CallProvider>
+            <MainLayout />
+          </CallProvider>
+        </ChatProvider>
+      </ToastProvider>
+    </ThemeProvider>
   );
 }

@@ -8,3 +8,6 @@ server/uploads/*
 !server/uploads/.gitkeep
 client/android/.gradle
 client/android/app/build
+desktop/client_dist/
+release-windows/
+*.apk

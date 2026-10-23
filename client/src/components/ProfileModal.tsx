@@ -1,6 +1,16 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import { useChat } from '../context/ChatContext';
-import { X, User as UserIcon, Sparkles, Smile, Check } from 'lucide-react';
+import { api } from '../services/api';
+import { Modal } from './ui/Modal';
+import { Button } from './ui/Button';
+import { Avatar } from './ui/Avatar';
+import {
+  User as UserIcon,
+  Upload,
+  Check,
+  AlertCircle,
+  AtSign,
+} from 'lucide-react';
 
 const AVATAR_PRESETS = [
   'https://api.dicebear.com/7.x/bottts/svg?seed=Felix',
@@ -20,145 +30,227 @@ interface ProfileModalProps {
 
 export const ProfileModal: React.FC<ProfileModalProps> = ({ isOpen, onClose }) => {
   const { currentUser, updateProfile } = useChat();
+
   const [displayName, setDisplayName] = useState(currentUser?.displayName || '');
+  const [username, setUsername] = useState(currentUser?.username || '');
   const [statusText, setStatusText] = useState(currentUser?.statusText || '');
   const [avatarUrl, setAvatarUrl] = useState(currentUser?.avatarUrl || AVATAR_PRESETS[0]);
+  const [uploadingCustom, setUploadingCustom] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [success, setSuccess] = useState(false);
+  const [savedSuccess, setSavedSuccess] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  if (!isOpen || !currentUser) return null;
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const handleCustomAvatarUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setUploadingCustom(true);
+    setError(null);
+    try {
+      const res = await api.uploadFile(file);
+      setAvatarUrl(res.url);
+    } catch (err: any) {
+      setError(err.message || 'Ошибка загрузки фото');
+    } finally {
+      setUploadingCustom(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  };
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
+    setError(null);
     setLoading(true);
-    setSuccess(false);
+    setSavedSuccess(false);
 
     try {
       await updateProfile({
-        displayName,
-        statusText,
+        displayName: displayName.trim() || undefined,
+        username: username.trim().replace(/^@/, '') || undefined,
+        statusText: statusText.trim(),
         avatarUrl,
       });
-      setSuccess(true);
+
+      setSavedSuccess(true);
       setTimeout(() => {
-        setSuccess(false);
+        setSavedSuccess(false);
         onClose();
-      }, 1000);
-    } catch (err) {
-      console.error('Update profile error:', err);
+      }, 900);
+    } catch (err: any) {
+      setError(err.message || 'Не удалось сохранить профиль');
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm animate-in fade-in duration-200">
-      <div className="w-full max-w-md bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-2xl relative text-slate-200">
-        <button
-          onClick={onClose}
-          className="absolute right-5 top-5 p-1.5 text-slate-400 hover:text-white rounded-full hover:bg-slate-800 transition-colors"
-        >
-          <X className="w-5 h-5" />
-        </button>
+    <Modal
+      isOpen={isOpen}
+      onClose={onClose}
+      title="Мой профиль"
+      subtitle={`@${currentUser?.username}`}
+      maxWidth="md"
+    >
+      <form onSubmit={handleSave} className="space-y-5">
+        {/* Avatar Section */}
+        <div className="flex flex-col items-center">
+          <div className="relative mb-3 group">
+            <Avatar
+              src={avatarUrl}
+              name={displayName || currentUser?.displayName || 'User'}
+              size="2xl"
+              className="shadow-xl ring-4 ring-[var(--accent-default,#6366f1)]/30"
+            />
 
-        <div className="flex items-center gap-3 mb-6">
-          <div className="w-12 h-12 rounded-2xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center text-indigo-400">
-            <UserIcon className="w-6 h-6" />
+            {/* Custom Photo Upload Button */}
+            <input
+              type="file"
+              ref={fileInputRef}
+              onChange={handleCustomAvatarUpload}
+              accept="image/*"
+              className="hidden"
+            />
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={uploadingCustom}
+              title="Загрузить своё фото"
+              className="absolute bottom-0 right-0 p-2 rounded-full bg-[var(--accent-default,#6366f1)] text-white shadow-lg hover:scale-110 active:scale-95 transition-all cursor-pointer border-2 border-[var(--bg-app,#090d16)]"
+            >
+              {uploadingCustom ? (
+                <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+              ) : (
+                <Upload className="w-4 h-4" />
+              )}
+            </button>
           </div>
-          <div>
-            <h2 className="text-lg font-bold text-white">Мой профиль</h2>
-            <p className="text-xs text-slate-400">@{currentUser.username}</p>
-          </div>
-        </div>
 
-        <form onSubmit={handleSave} className="space-y-4">
-          <div className="flex flex-col items-center pb-2">
-            <div className="relative mb-3">
-              <img
-                src={avatarUrl}
-                alt="Profile Avatar"
-                className="w-20 h-20 rounded-full border-2 border-indigo-500/40 bg-slate-800 p-0.5 shadow-lg object-cover"
-              />
-            </div>
-            <p className="text-xs text-slate-400 mb-2">Выберите аватар из галереи:</p>
-            <div className="flex flex-wrap justify-center gap-2 max-w-xs">
-              {AVATAR_PRESETS.map((preset, idx) => (
+          <p className="text-xs text-[var(--text-secondary,#94a3b8)] mb-2.5">
+            Галерея аватаров или загрузка своего фото:
+          </p>
+
+          {/* 4x2 Grid of Robot Presets */}
+          <div className="grid grid-cols-4 gap-2.5 p-2 bg-black/20 rounded-2xl border border-white/5">
+            {AVATAR_PRESETS.map((preset, idx) => {
+              const isSelected = avatarUrl === preset;
+              return (
                 <button
                   key={idx}
                   type="button"
                   onClick={() => setAvatarUrl(preset)}
-                  className={`w-9 h-9 rounded-full p-0.5 transition-all ${
-                    avatarUrl === preset
-                      ? 'ring-2 ring-indigo-500 scale-110 shadow-md'
-                      : 'opacity-60 hover:opacity-100 hover:scale-105'
+                  className={`relative w-11 h-11 rounded-full p-0.5 transition-all cursor-pointer ${
+                    isSelected
+                      ? 'ring-2 ring-[var(--accent-default,#6366f1)] scale-110 shadow-md bg-[var(--accent-subtle,rgba(99,102,241,0.2))]'
+                      : 'opacity-70 hover:opacity-100 hover:scale-105'
                   }`}
                 >
-                  <img src={preset} alt="preset" className="w-full h-full rounded-full bg-slate-800" />
+                  <img src={preset} alt={`avatar-${idx}`} className="w-full h-full rounded-full bg-slate-800 object-cover" />
+                  {isSelected && (
+                    <span className="absolute -bottom-1 -right-1 w-4 h-4 rounded-full bg-[var(--accent-default,#6366f1)] text-white flex items-center justify-center text-[9px] shadow-sm">
+                      <Check className="w-3 h-3 stroke-[3]" />
+                    </span>
+                  )}
                 </button>
-              ))}
-            </div>
+              );
+            })}
           </div>
+        </div>
 
+        {error && (
+          <div className="p-3 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-400 text-xs flex items-center gap-2">
+            <AlertCircle className="w-4 h-4 shrink-0" />
+            <span>{error}</span>
+          </div>
+        )}
+
+        {savedSuccess && (
+          <div className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs flex items-center gap-2">
+            <Check className="w-4 h-4 shrink-0" />
+            <span>Профиль успешно обновлен!</span>
+          </div>
+        )}
+
+        {/* Input Fields */}
+        <div className="space-y-3.5">
+          {/* Display Name */}
           <div>
-            <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">
-              Отображаемое имя
+            <label className="block text-xs font-semibold uppercase tracking-wider text-[var(--text-secondary,#94a3b8)] mb-1.5">
+              Имя пользователя в чате
             </label>
             <div className="relative">
-              <Sparkles className="w-4 h-4 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
+              <UserIcon className="w-4 h-4 text-[var(--text-muted,#64748b)] absolute left-3 top-1/2 -translate-y-1/2" />
               <input
                 type="text"
                 required
                 value={displayName}
                 onChange={(e) => setDisplayName(e.target.value)}
                 placeholder="Ваше имя"
-                className="w-full pl-9 pr-3 py-2 bg-slate-950/60 border border-slate-800 rounded-xl text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 text-sm"
+                className="w-full pl-9 pr-3 py-2 bg-[var(--bg-input,#080c14)] border border-[var(--border-subtle,rgba(255,255,255,0.08))] rounded-xl text-xs text-[var(--text-primary,#f8fafc)] placeholder-[var(--text-muted,#64748b)] focus:outline-none focus:border-[var(--accent-default,#6366f1)] transition-colors"
               />
             </div>
           </div>
 
+          {/* Username (@handle) */}
           <div>
-            <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">
-              Статус / О себе
+            <label className="block text-xs font-semibold uppercase tracking-wider text-[var(--text-secondary,#94a3b8)] mb-1.5">
+              Публичный юзернейм (@)
             </label>
             <div className="relative">
-              <Smile className="w-4 h-4 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
+              <AtSign className="w-4 h-4 text-[var(--text-muted,#64748b)] absolute left-3 top-1/2 -translate-y-1/2" />
               <input
                 type="text"
-                value={statusText}
-                onChange={(e) => setStatusText(e.target.value)}
-                placeholder="На связи / На встрече..."
-                className="w-full pl-9 pr-3 py-2 bg-slate-950/60 border border-slate-800 rounded-xl text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 text-sm"
+                value={username}
+                onChange={(e) => setUsername(e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, ''))}
+                placeholder="username"
+                className="w-full pl-9 pr-3 py-2 bg-[var(--bg-input,#080c14)] border border-[var(--border-subtle,rgba(255,255,255,0.08))] rounded-xl text-xs text-[var(--text-primary,#f8fafc)] placeholder-[var(--text-muted,#64748b)] focus:outline-none focus:border-[var(--accent-default,#6366f1)] font-mono transition-colors"
               />
             </div>
+            <p className="text-[10px] text-[var(--text-muted,#64748b)] mt-1">
+              Позволяет другим людям находить вас по ссылке pulse.chat/@{username || 'username'}
+            </p>
           </div>
 
-          <div className="pt-4 flex items-center justify-end gap-2 border-t border-slate-800">
-            <button
-              type="button"
-              onClick={onClose}
-              className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium rounded-xl transition-colors"
-            >
-              Отмена
-            </button>
-            <button
-              type="submit"
-              disabled={loading}
-              className="px-5 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium rounded-xl flex items-center gap-1.5 transition-colors disabled:opacity-50"
-            >
-              {success ? (
-                <>
-                  <Check className="w-4 h-4 text-emerald-400" />
-                  <span>Сохранено!</span>
-                </>
-              ) : loading ? (
-                <span>Сохранение...</span>
-              ) : (
-                <span>Сохранить</span>
-              )}
-            </button>
+          {/* Status / Bio */}
+          <div>
+            <label className="block text-xs font-semibold uppercase tracking-wider text-[var(--text-secondary,#94a3b8)] mb-1.5">
+              О себе / Статус
+            </label>
+            <div className="relative">
+              <textarea
+                rows={2}
+                value={statusText}
+                onChange={(e) => setStatusText(e.target.value)}
+                placeholder="Напишите несколько слов о себе..."
+                maxLength={140}
+                className="w-full px-3 py-2 bg-[var(--bg-input,#080c14)] border border-[var(--border-subtle,rgba(255,255,255,0.08))] rounded-xl text-xs text-[var(--text-primary,#f8fafc)] placeholder-[var(--text-muted,#64748b)] focus:outline-none focus:border-[var(--accent-default,#6366f1)] resize-none transition-colors"
+              />
+            </div>
+            <div className="text-right text-[10px] text-[var(--text-muted,#64748b)]">
+              {statusText.length}/140
+            </div>
           </div>
-        </form>
-      </div>
-    </div>
+        </div>
+
+        {/* Buttons */}
+        <div className="pt-2 flex items-center justify-end gap-2 border-t border-[var(--border-subtle,rgba(255,255,255,0.08))]">
+          <Button
+            type="button"
+            variant="ghost"
+            onClick={onClose}
+          >
+            Отмена
+          </Button>
+          <Button
+            type="submit"
+            loading={loading}
+            icon={<Check className="w-4 h-4" />}
+          >
+            Сохранить
+          </Button>
+        </div>
+      </form>
+    </Modal>
   );
 };
