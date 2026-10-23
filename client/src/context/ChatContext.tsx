@@ -64,12 +64,196 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [loadingMessages, setLoadingMessages] = useState<boolean>(false);
   const [connectionStatus, setConnectionStatus] = useState<'connected' | 'connecting' | 'disconnected'>('connecting');
 
+  const activeConversationIdRef = useRef<string | null>(activeConversationId);
+  useEffect(() => {
+    activeConversationIdRef.current = activeConversationId;
+  }, [activeConversationId]);
+
+  const currentUserRef = useRef<User | null>(currentUser);
+  useEffect(() => {
+    currentUserRef.current = currentUser;
+  }, [currentUser]);
+
+  const lastSeqRef = useRef<number>(Number(localStorage.getItem('pulse_last_seq') || 0));
+  const serverEpochRef = useRef<string>(localStorage.getItem('pulse_server_epoch') || '');
+  const isSyncingRef = useRef<boolean>(false);
+
+  // Load conversations
+  const refreshConversations = useCallback(async () => {
+    if (!token) return;
+    try {
+      const data = await api.getConversations();
+      setConversations(data);
+    } catch (err) {
+      console.error('Failed to load conversations:', err);
+    }
+  }, [token]);
+
+  // Apply a message event into state
+  const applyIncomingMessage = useCallback((newMsg: Message) => {
+    if (newMsg.seq) {
+      if (lastSeqRef.current > 0 && newMsg.seq > lastSeqRef.current + 1) {
+        // Gap detected! Trigger catch-up sync
+        syncWithServer();
+      }
+      lastSeqRef.current = Math.max(lastSeqRef.current, newMsg.seq);
+      localStorage.setItem('pulse_last_seq', String(lastSeqRef.current));
+    }
+
+    if (newMsg.conversationId === activeConversationIdRef.current) {
+      api.markConversationAsRead(newMsg.conversationId).catch(() => {});
+    }
+
+    setMessages((prev) => {
+      if (newMsg.conversationId === activeConversationIdRef.current) {
+        const idx = prev.findIndex(
+          (m) => m.id === newMsg.id || (newMsg.clientMessageId && m.clientMessageId === newMsg.clientMessageId)
+        );
+        if (idx !== -1) {
+          const next = [...prev];
+          next[idx] = newMsg;
+          return next;
+        }
+        return [...prev, newMsg];
+      }
+      return prev;
+    });
+
+    setConversations((prev) => {
+      const found = prev.find((c) => c.id === newMsg.conversationId);
+      if (!found) {
+        refreshConversations();
+        return prev;
+      }
+
+      const isCurrentActive = newMsg.conversationId === activeConversationIdRef.current;
+      const updated = prev.map((c) => {
+        if (c.id === newMsg.conversationId) {
+          const newUnread = isCurrentActive
+            ? 0
+            : (currentUserRef.current && newMsg.senderId !== currentUserRef.current.id)
+            ? (c.unreadCount || 0) + 1
+            : c.unreadCount || 0;
+
+          return {
+            ...c,
+            unreadCount: newUnread,
+            lastMessage: {
+              id: newMsg.id,
+              senderId: newMsg.senderId,
+              senderName: newMsg.senderName,
+              text: newMsg.text,
+              type: newMsg.type,
+              fileName: newMsg.fileName,
+              createdAt: newMsg.createdAt,
+            },
+            updatedAt: newMsg.createdAt,
+          };
+        }
+        return c;
+      });
+
+      return updated.sort((a, b) => (Number(b.isPinned || 0) - Number(a.isPinned || 0)) || (new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()));
+    });
+  }, [refreshConversations]);
+
+  // Delta synchronization
+  const syncWithServer = useCallback(async () => {
+    if (!token || isSyncingRef.current) return;
+    isSyncingRef.current = true;
+    try {
+      const res = await api.sync(lastSeqRef.current, serverEpochRef.current);
+      if (res.fullResyncRequired) {
+        serverEpochRef.current = res.epoch;
+        lastSeqRef.current = res.latestSeq;
+        localStorage.setItem('pulse_server_epoch', res.epoch);
+        localStorage.setItem('pulse_last_seq', String(res.latestSeq));
+        await refreshConversations();
+        const activeId = activeConversationIdRef.current;
+        if (activeId) {
+          const msgs = await api.getMessages(activeId);
+          setMessages(msgs);
+        }
+      } else if (res.events && res.events.length > 0) {
+        for (const evt of res.events) {
+          if (evt.eventType === 'message:new') {
+            applyIncomingMessage(evt.data);
+          } else if (evt.eventType === 'message:edit') {
+            setMessages((prev) =>
+              prev.map((m) => (m.id === evt.data.messageId ? { ...m, text: evt.data.text, updatedAt: evt.data.updatedAt } : m))
+            );
+          } else if (evt.eventType === 'message:delete') {
+            setMessages((prev) =>
+              prev.map((m) => (m.id === evt.data.messageId ? { ...m, isDeleted: true, text: 'Сообщение удалено' } : m))
+            );
+          } else if (evt.eventType === 'reactions:update') {
+            setMessages((prev) =>
+              prev.map((m) => (m.id === evt.data.messageId ? { ...m, reactions: evt.data.reactions } : m))
+            );
+          } else if (evt.eventType === 'conversation:pinned') {
+            setConversations((prev) =>
+              prev.map((c) => (c.id === evt.data.conversationId ? { ...c, pinnedMessageId: evt.data.pinnedMessageId, pinnedMessage: evt.data.pinnedMessage } : c))
+            );
+          } else if (evt.eventType === 'conversation:new') {
+            refreshConversations();
+          } else if (evt.eventType === 'conversation:read') {
+            if (currentUserRef.current && evt.data.userId === currentUserRef.current.id) {
+              setConversations((prev) =>
+                prev.map((c) => (c.id === evt.data.conversationId ? { ...c, unreadCount: 0 } : c))
+              );
+            }
+          }
+
+          if (evt.seq > lastSeqRef.current) {
+            lastSeqRef.current = evt.seq;
+            localStorage.setItem('pulse_last_seq', String(evt.seq));
+          }
+        }
+      } else if (res.latestSeq > lastSeqRef.current) {
+        lastSeqRef.current = res.latestSeq;
+        localStorage.setItem('pulse_last_seq', String(res.latestSeq));
+      }
+    } catch (err) {
+      console.warn('Sync failed:', err);
+    } finally {
+      isSyncingRef.current = false;
+    }
+  }, [token, refreshConversations, applyIncomingMessage]);
+
+  // Connection and catch-up triggers
   useEffect(() => {
     const unsub = socketService.onConnectionChange((status) => {
       setConnectionStatus(status);
+      if (status === 'connected') {
+        syncWithServer();
+      }
     });
     return unsub;
-  }, []);
+  }, [syncWithServer]);
+
+  useEffect(() => {
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        syncWithServer();
+      }
+    };
+    const onFocus = () => {
+      syncWithServer();
+    };
+    const onOnline = () => {
+      syncWithServer();
+    };
+
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    window.addEventListener('focus', onFocus);
+    window.addEventListener('online', onOnline);
+
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      window.removeEventListener('focus', onFocus);
+      window.removeEventListener('online', onOnline);
+    };
+  }, [syncWithServer]);
 
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -97,23 +281,6 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
         });
     }
   }, [token]);
-
-  // Load conversations
-  const refreshConversations = useCallback(async () => {
-    if (!token) return;
-    try {
-      const data = await api.getConversations();
-      setConversations(data);
-    } catch (err) {
-      console.error('Failed to load conversations:', err);
-    }
-  }, [token]);
-
-  useEffect(() => {
-    if (currentUser) {
-      refreshConversations();
-    }
-  }, [currentUser, refreshConversations]);
 
   // Socket event listeners
   useEffect(() => {
@@ -153,70 +320,19 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
     // Handle incoming new message
     const unsubNewMessage = socketService.onMessageNew((newMsg) => {
       // Sound and notifications for other users' messages
-      if (currentUser && newMsg.senderId !== currentUser.id) {
+      if (currentUserRef.current && newMsg.senderId !== currentUserRef.current.id) {
         soundService.playMessageReceived();
         notificationService.show(
           newMsg.senderName,
           newMsg.type === 'voice' ? '🎤 Голосовое сообщение' : (newMsg.text || 'Вложение'),
           newMsg.senderAvatar,
           () => {
-            setActiveConversationId(newMsg.conversationId);
+            selectConversation(newMsg.conversationId);
           }
         );
       }
 
-      if (newMsg.conversationId === activeConversationId) {
-        api.markConversationAsRead(newMsg.conversationId).catch(() => {});
-      }
-
-      setMessages((prev) => {
-        if (newMsg.conversationId === activeConversationId) {
-          // Avoid duplicate
-          if (prev.some((m) => m.id === newMsg.id)) return prev;
-          return [...prev, newMsg];
-        }
-        return prev;
-      });
-
-      // Update conversation in sidebar
-      setConversations((prev) => {
-        const found = prev.find((c) => c.id === newMsg.conversationId);
-        if (!found) {
-          refreshConversations();
-          return prev;
-        }
-
-        const isCurrentActive = newMsg.conversationId === activeConversationId;
-
-        const updated = prev.map((c) => {
-          if (c.id === newMsg.conversationId) {
-            const newUnread = isCurrentActive
-              ? 0
-              : (currentUser && newMsg.senderId !== currentUser.id)
-              ? (c.unreadCount || 0) + 1
-              : c.unreadCount || 0;
-
-            return {
-              ...c,
-              unreadCount: newUnread,
-              lastMessage: {
-                id: newMsg.id,
-                senderId: newMsg.senderId,
-                senderName: newMsg.senderName,
-                text: newMsg.text,
-                type: newMsg.type,
-                fileName: newMsg.fileName,
-                createdAt: newMsg.createdAt,
-              },
-              updatedAt: newMsg.createdAt,
-            };
-          }
-          return c;
-        });
-
-        // Sort by isPinned descending, then updatedAt descending
-        return updated.sort((a, b) => (Number(b.isPinned || 0) - Number(a.isPinned || 0)) || (new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()));
-      });
+      applyIncomingMessage(newMsg);
     });
 
     // Handle pin update
@@ -273,7 +389,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
       unsubDelete();
       unsubTyping();
     };
-  }, [currentUser, token, activeConversationId, refreshConversations]);
+  }, [currentUser, token, applyIncomingMessage]);
 
   // Request notification permission once
   useEffect(() => {
@@ -331,6 +447,10 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const logout = () => {
     localStorage.removeItem('token');
     localStorage.removeItem('pulse_active_conv_id');
+    localStorage.removeItem('pulse_last_seq');
+    localStorage.removeItem('pulse_server_epoch');
+    lastSeqRef.current = 0;
+    serverEpochRef.current = '';
     setToken(null);
     setCurrentUser(null);
     setActiveConversationId(null);
@@ -365,10 +485,39 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
     voiceDuration?: number;
     replyToId?: string;
   }) => {
-    if (!activeConversationId) return;
+    if (!activeConversationId || !currentUser) return;
+    const clientMessageId = `c_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+
+    // Optimistic message for instant UI feedback
+    const optimisticMsg: Message = {
+      id: clientMessageId,
+      clientMessageId,
+      conversationId: activeConversationId,
+      senderId: currentUser.id,
+      senderUsername: currentUser.username,
+      senderName: currentUser.displayName || currentUser.username,
+      senderAvatar: currentUser.avatarUrl || '',
+      text: data.text || '',
+      type: data.type || 'text',
+      fileUrl: data.fileUrl,
+      fileName: data.fileName,
+      fileSize: data.fileSize,
+      voiceDuration: data.voiceDuration,
+      replyToId: data.replyToId,
+      replyTo: data.replyToId ? messages.find((m) => m.id === data.replyToId) : null,
+      reactions: [],
+      isDeleted: false,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      pending: true,
+    };
+
+    setMessages((prev) => [...prev, optimisticMsg]);
+
     socketService.sendMessage({
       conversationId: activeConversationId,
       ...data,
+      clientMessageId,
     });
     soundService.playMessageSent();
     stopTyping();

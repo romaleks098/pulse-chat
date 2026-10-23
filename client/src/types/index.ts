@@ -43,6 +43,9 @@ export interface Message {
   createdAt: string;
   updatedAt: string;
   reactions: Reaction[];
+  seq?: number;
+  clientMessageId?: string;
+  pending?: boolean;
 }
 
 export interface Conversation {

@@ -1,6 +1,5 @@
 import type { User, Conversation, Message, NetworkInfo } from '../types';
-
-const API_BASE = '/api';
+import { API_BASE } from '../config';
 
 function getAuthHeaders(): HeadersInit {
   const token = localStorage.getItem('token');
@@ -230,6 +229,30 @@ export const api = {
   async getNetworkInfo(): Promise<NetworkInfo> {
     const res = await fetch(`${API_BASE}/network/info`);
     if (!res.ok) throw new Error('Не удалось получить сетевую информацию');
+    return res.json();
+  },
+
+  // Real-time delta sync
+  async sync(since: number, epoch: string | null): Promise<{
+    fullResyncRequired: boolean;
+    epoch: string;
+    latestSeq: number;
+    events: {
+      seq: number;
+      conversationId: string;
+      eventType: string;
+      data: any;
+      createdAt: string;
+    }[];
+  }> {
+    const query = new URLSearchParams();
+    query.set('since', String(since || 0));
+    if (epoch) query.set('epoch', epoch);
+
+    const res = await fetch(`${API_BASE}/sync?${query.toString()}`, {
+      headers: getAuthHeaders(),
+    });
+    if (!res.ok) throw new Error('Sync request failed');
     return res.json();
   },
 };

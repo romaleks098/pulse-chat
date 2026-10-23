@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
+import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -75,6 +76,24 @@ export function initDatabase() {
       FOREIGN KEY (reply_to_id) REFERENCES messages(id) ON DELETE SET NULL
     );
 
+    CREATE TABLE IF NOT EXISTS server_meta (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS sync_events (
+      seq INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT,
+      conversation_id TEXT NOT NULL,
+      event_type TEXT NOT NULL,
+      payload TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_sync_events_seq ON sync_events(seq);
+    CREATE INDEX IF NOT EXISTS idx_sync_events_user ON sync_events(user_id, seq);
+    CREATE INDEX IF NOT EXISTS idx_sync_events_conv ON sync_events(conversation_id, seq);
+
     CREATE TABLE IF NOT EXISTS reactions (
       id TEXT PRIMARY KEY,
       message_id TEXT NOT NULL,
@@ -130,6 +149,12 @@ export function initDatabase() {
   try {
     db.exec(`ALTER TABLE messages ADD COLUMN voice_duration REAL;`);
   } catch {}
+  try {
+    db.exec(`ALTER TABLE messages ADD COLUMN seq INTEGER;`);
+  } catch {}
+  try {
+    db.exec(`ALTER TABLE messages ADD COLUMN client_message_id TEXT;`);
+  } catch {}
 
   // Migrate messages table check constraint if needed
   try {
@@ -165,5 +190,58 @@ export function initDatabase() {
     }
   } catch (err) {
     console.error('Migration error:', err);
+  }
+
+  // Run cleanup of sync events older than 30 days
+  cleanupOldSyncEvents();
+}
+
+let cachedServerEpoch = '';
+
+export function getServerEpoch(): string {
+  if (cachedServerEpoch) return cachedServerEpoch;
+
+  try {
+    const row = db.prepare(`SELECT value FROM server_meta WHERE key = 'server_epoch'`).get() as any;
+    if (row && typeof row.value === 'string' && row.value) {
+      cachedServerEpoch = row.value;
+      return cachedServerEpoch;
+    }
+
+    const newEpoch = crypto.randomUUID();
+    db.prepare(`INSERT OR REPLACE INTO server_meta (key, value) VALUES ('server_epoch', ?)`).run(newEpoch);
+    cachedServerEpoch = newEpoch;
+    return newEpoch;
+  } catch (err) {
+    console.error('Error getting server epoch:', err);
+    return 'default_epoch';
+  }
+}
+
+export function cleanupOldSyncEvents() {
+  try {
+    db.prepare(`DELETE FROM sync_events WHERE created_at < datetime('now', '-30 days')`).run();
+  } catch (err) {
+    console.error('Error cleaning old sync events:', err);
+  }
+}
+
+export function recordSyncEvent(
+  eventType: string,
+  conversationId: string,
+  payload: any,
+  userId?: string
+): number {
+  try {
+    const info = db.prepare(`
+      INSERT INTO sync_events (user_id, conversation_id, event_type, payload)
+      VALUES (?, ?, ?, ?)
+    `).run(userId || null, conversationId, eventType, JSON.stringify(payload));
+
+    const seq = Number(info.lastInsertRowid);
+    return seq;
+  } catch (err) {
+    console.error('Failed to record sync event:', err);
+    return 0;
   }
 }

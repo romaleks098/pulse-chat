@@ -2,6 +2,7 @@ import { Router } from 'express';
 import crypto from 'crypto';
 import { db } from '../db.js';
 import { requireAuth, AuthenticatedRequest } from '../auth.js';
+import { broadcastToConversationMembers } from '../socket.js';
 
 export const conversationsRouter = Router();
 
@@ -191,6 +192,13 @@ conversationsRouter.post('/direct', requireAuth, (req: AuthenticatedRequest, res
 
     insertConv();
 
+    broadcastToConversationMembers(convId, 'conversation:new', {
+      id: convId,
+      type: 'direct',
+      isSaved: false,
+      createdAt: now,
+    }, true);
+
     res.json({ id: convId, isNew: true });
   } catch (err) {
     console.error('Create direct chat error:', err);
@@ -238,6 +246,14 @@ conversationsRouter.post('/group', requireAuth, (req: AuthenticatedRequest, res)
     });
 
     createGroup();
+
+    broadcastToConversationMembers(convId, 'conversation:new', {
+      id: convId,
+      type: 'group',
+      name: name.trim(),
+      avatarUrl: groupAvatar,
+      createdAt: now,
+    }, true);
 
     res.json({ id: convId, isNew: true });
   } catch (err) {
@@ -405,6 +421,15 @@ conversationsRouter.post('/saved', requireAuth, (req: AuthenticatedRequest, res)
     });
 
     createSaved();
+
+    broadcastToConversationMembers(convId, 'conversation:new', {
+      id: convId,
+      type: 'direct',
+      name: 'Избранное',
+      isSaved: true,
+      createdAt: now,
+    }, true, currentUserId);
+
     res.json({ id: convId, isNew: true });
   } catch (err) {
     console.error('Create saved messages error:', err);
@@ -530,6 +555,13 @@ conversationsRouter.post('/:id/read', requireAuth, (req: AuthenticatedRequest, r
     db.prepare(`
       UPDATE conversation_members SET last_read_at = ? WHERE conversation_id = ? AND user_id = ?
     `).run(now, convId, currentUserId);
+
+    broadcastToConversationMembers(convId, 'conversation:read', {
+      conversationId: convId,
+      userId: currentUserId,
+      readAt: now,
+    }, true);
+
     res.json({ success: true, lastReadAt: now });
   } catch (err) {
     console.error('Mark read error:', err);
@@ -659,6 +691,16 @@ conversationsRouter.post('/channel', requireAuth, (req: AuthenticatedRequest, re
         VALUES (?, ?, ?, ?, 'text', ?, ?)
       `).run(sysMsgId, convId, currentUserId, `Канал "${name.trim()}" создан`, now, now);
     })();
+
+    broadcastToConversationMembers(convId, 'conversation:new', {
+      id: convId,
+      type: 'group',
+      isChannel: true,
+      name: name.trim(),
+      avatarUrl: channelAvatar,
+      description: description.trim(),
+      createdAt: now,
+    }, true, currentUserId);
 
     res.json({ id: convId, isNew: true });
   } catch (err) {

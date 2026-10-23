@@ -1,4 +1,5 @@
 import { io, Socket } from 'socket.io-client';
+import { SOCKET_URL } from '../config';
 import type { Message, Reaction } from '../types';
 
 let socket: Socket | null = null;
@@ -14,11 +15,15 @@ export const socketService = {
       socket.disconnect();
     }
 
-    socket = io({
+    socket = io(SOCKET_URL, {
       auth: { token },
       transports: ['websocket', 'polling'],
-      reconnectionAttempts: 10,
+      reconnection: true,
+      reconnectionAttempts: Infinity,
       reconnectionDelay: 1000,
+      reconnectionDelayMax: 5000,
+      randomizationFactor: 0.5,
+      timeout: 10000,
     });
 
     socket.on('connect', () => {
@@ -74,6 +79,7 @@ export const socketService = {
     fileSize?: number;
     voiceDuration?: number;
     replyToId?: string;
+    clientMessageId?: string;
   }) {
     socket?.emit('message:send', data);
   },

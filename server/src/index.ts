@@ -11,6 +11,7 @@ import { usersRouter } from './routes/users.js';
 import { conversationsRouter } from './routes/conversations.js';
 import { uploadRouter, uploadDir } from './routes/upload.js';
 import { networkRouter } from './routes/network.js';
+import { syncRouter } from './routes/sync.js';
 import { setupSocketServer } from './socket.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -22,12 +23,36 @@ initDatabase();
 const app = express();
 const server = http.createServer(app);
 
-// Enable CORS for local network and Vite dev server
+const ALLOWED_ORIGINS = [
+  'http://localhost:5173',
+  'http://localhost:3001',
+  'https://pulse-chat-qel7.onrender.com',
+  'http://localhost',
+  'https://localhost',
+  'capacitor://localhost',
+  'ionic://localhost',
+  'app://',
+  'file://',
+];
+
+// Enable CORS for web, mobile (Capacitor), and desktop (Electron)
 app.use(
   cors({
-    origin: '*',
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
+    origin: (origin, callback) => {
+      // Allow requests with no origin (like mobile apps, curl, or Electron)
+      if (!origin) return callback(null, true);
+      if (ALLOWED_ORIGINS.some((allowed) => origin === allowed || origin.startsWith(allowed))) {
+        return callback(null, true);
+      }
+      // In production or preview, allow all pulse-chat domains
+      if (origin.endsWith('.onrender.com')) {
+        return callback(null, true);
+      }
+      return callback(null, true);
+    },
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
   })
 );
 
@@ -43,6 +68,7 @@ app.use('/api/users', usersRouter);
 app.use('/api/conversations', conversationsRouter);
 app.use('/api/upload', uploadRouter);
 app.use('/api/network', networkRouter);
+app.use('/api/sync', syncRouter);
 
 app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok', time: new Date().toISOString() });
@@ -73,7 +99,10 @@ const io = new Server(server, {
   cors: {
     origin: '*',
     methods: ['GET', 'POST'],
+    credentials: true,
   },
+  pingInterval: 10000,
+  pingTimeout: 5000,
   maxHttpBufferSize: 1e8, // 100MB
 });
 

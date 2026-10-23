@@ -1,6 +1,6 @@
 import { Server, Socket } from 'socket.io';
 import crypto from 'crypto';
-import { db } from './db.js';
+import { db, recordSyncEvent } from './db.js';
 import { verifyToken, TokenPayload } from './auth.js';
 
 interface AuthenticatedSocket extends Socket {
@@ -9,8 +9,41 @@ interface AuthenticatedSocket extends Socket {
 
 // Maps userId to set of active socketIds
 const onlineUsers = new Map<string, Set<string>>();
+let ioInstance: Server | null = null;
+
+export function getIO(): Server | null {
+  return ioInstance;
+}
+
+export function broadcastToConversationMembers(
+  conversationId: string,
+  event: string,
+  data: any,
+  recordEvent = true,
+  targetUserId?: string
+) {
+  if (!ioInstance) return;
+
+  let seq = 0;
+  if (recordEvent) {
+    seq = recordSyncEvent(event, conversationId, data, targetUserId);
+  }
+  const payload = seq ? { ...data, seq } : data;
+
+  try {
+    const members = db.prepare(`SELECT user_id FROM conversation_members WHERE conversation_id = ?`).all(conversationId) as { user_id: string }[];
+    for (const m of members) {
+      ioInstance.to(`user:${m.user_id}`).emit(event, payload);
+    }
+  } catch (err) {
+    console.error('Error broadcasting to members:', err);
+  }
+
+  ioInstance.to(`conv_${conversationId}`).emit(event, payload);
+}
 
 export function setupSocketServer(io: Server) {
+  ioInstance = io;
   // Authentication middleware
   io.use((socket: AuthenticatedSocket, next) => {
     const token = socket.handshake.auth?.token || socket.handshake.headers?.authorization?.replace('Bearer ', '');
@@ -36,6 +69,9 @@ export function setupSocketServer(io: Server) {
       onlineUsers.set(userId, new Set());
     }
     onlineUsers.get(userId)!.add(socket.id);
+
+    // Join personal user room so all devices/tabs of this user receive real-time sync
+    socket.join(`user:${userId}`);
 
     // Auto-join all conversation rooms this user belongs to
     try {
@@ -90,8 +126,9 @@ export function setupSocketServer(io: Server) {
       fileSize?: number;
       voiceDuration?: number;
       replyToId?: string;
+      clientMessageId?: string;
     }) => {
-      const { conversationId, text, type = 'text', fileUrl, fileName, fileSize, voiceDuration, replyToId } = data;
+      const { conversationId, text, type = 'text', fileUrl, fileName, fileSize, voiceDuration, replyToId, clientMessageId } = data;
 
       try {
         // Verify user is in conversation
@@ -105,20 +142,6 @@ export function setupSocketServer(io: Server) {
 
         const msgId = crypto.randomUUID();
         const now = new Date().toISOString();
-
-        // Save message & update conversation time
-        const insertMsg = db.transaction(() => {
-          db.prepare(`
-            INSERT INTO messages (id, conversation_id, sender_id, text, type, file_url, file_name, file_size, voice_duration, reply_to_id, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-          `).run(msgId, conversationId, userId, text || '', type, fileUrl || null, fileName || null, fileSize || null, voiceDuration || null, replyToId || null, now, now);
-
-          db.prepare(`
-            UPDATE conversations SET updated_at = ? WHERE id = ?
-          `).run(now, conversationId);
-        });
-
-        insertMsg();
 
         // Get sender details
         const sender = db.prepare(`
@@ -147,8 +170,9 @@ export function setupSocketServer(io: Server) {
           }
         }
 
-        const fullMessage = {
+        const messageData = {
           id: msgId,
+          clientMessageId: clientMessageId || null,
           conversationId,
           senderId: userId,
           senderUsername: sender.username,
@@ -168,8 +192,26 @@ export function setupSocketServer(io: Server) {
           reactions: [],
         };
 
-        // Broadcast to all participants in this conversation
-        io.to(`conv_${conversationId}`).emit('message:new', fullMessage);
+        // Record sync event to get monotonic sequence number (seq)
+        const seq = recordSyncEvent('message:new', conversationId, messageData);
+        const fullMessage = { ...messageData, seq };
+
+        // Save message & update conversation time
+        const insertMsg = db.transaction(() => {
+          db.prepare(`
+            INSERT INTO messages (id, conversation_id, sender_id, text, type, file_url, file_name, file_size, voice_duration, reply_to_id, client_message_id, seq, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `).run(msgId, conversationId, userId, text || '', type, fileUrl || null, fileName || null, fileSize || null, voiceDuration || null, replyToId || null, clientMessageId || null, seq, now, now);
+
+          db.prepare(`
+            UPDATE conversations SET updated_at = ? WHERE id = ?
+          `).run(now, conversationId);
+        });
+
+        insertMsg();
+
+        // Broadcast to all participants' rooms (user:<userId>) and conv room
+        broadcastToConversationMembers(conversationId, 'message:new', fullMessage, false);
       } catch (err) {
         console.error('Send message error:', err);
         socket.emit('error', { message: 'Failed to send message' });
@@ -205,11 +247,11 @@ export function setupSocketServer(io: Server) {
           }
         }
 
-        io.to(`conv_${conversationId}`).emit('conversation:pinned', {
+        broadcastToConversationMembers(conversationId, 'conversation:pinned', {
           conversationId,
           pinnedMessageId: messageId || null,
           pinnedMessage,
-        });
+        }, true);
       } catch (err) {
         console.error('Pin socket error:', err);
       }
@@ -246,11 +288,11 @@ export function setupSocketServer(io: Server) {
           emoji: r.emoji,
         }));
 
-        io.to(`conv_${conversationId}`).emit('message:reactions_updated', {
+        broadcastToConversationMembers(conversationId, 'message:reactions_updated', {
           conversationId,
           messageId,
           reactions: mappedReactions,
-        });
+        }, true);
       } catch (err) {
         console.error('Reaction toggle error:', err);
       }
@@ -267,12 +309,12 @@ export function setupSocketServer(io: Server) {
         const now = new Date().toISOString();
         db.prepare('UPDATE messages SET text = ?, updated_at = ? WHERE id = ?').run(newText.trim(), now, messageId);
 
-        io.to(`conv_${conversationId}`).emit('message:edited', {
+        broadcastToConversationMembers(conversationId, 'message:edited', {
           conversationId,
           messageId,
           text: newText.trim(),
           updatedAt: now,
-        });
+        }, true);
       } catch (err) {
         console.error('Edit message error:', err);
       }
@@ -289,10 +331,10 @@ export function setupSocketServer(io: Server) {
         const now = new Date().toISOString();
         db.prepare('UPDATE messages SET is_deleted = 1, text = ?, updated_at = ? WHERE id = ?').run('', now, messageId);
 
-        io.to(`conv_${conversationId}`).emit('message:deleted', {
+        broadcastToConversationMembers(conversationId, 'message:deleted', {
           conversationId,
           messageId,
-        });
+        }, true);
       } catch (err) {
         console.error('Delete message error:', err);
       }
