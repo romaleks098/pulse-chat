@@ -18,12 +18,18 @@ conversationsRouter.get('/', requireAuth, (req: AuthenticatedRequest, res) => {
         c.avatar_url,
         c.pinned_message_id,
         c.is_saved,
+        c.is_channel,
+        c.description,
         c.updated_at,
-        c.created_at
+        c.created_at,
+        cm.last_read_at,
+        cm.is_pinned,
+        cm.is_muted,
+        cm.is_archived
       FROM conversations c
       JOIN conversation_members cm ON cm.conversation_id = c.id
       WHERE cm.user_id = ?
-      ORDER BY c.updated_at DESC
+      ORDER BY cm.is_pinned DESC, c.updated_at DESC
     `).all(currentUserId) as any[];
 
     const result = rows.map((conv) => {
@@ -51,13 +57,30 @@ conversationsRouter.get('/', requireAuth, (req: AuthenticatedRequest, res) => {
 
       if (conv.is_saved === 1) {
         chatName = 'Избранное';
-        chatAvatar = 'https://api.dicebear.com/7.x/bottts/svg?seed=saved_messages_star';
+        chatAvatar = '';
+        partner = null;
       } else if (conv.type === 'direct') {
         partner = members.find((m) => m.id !== currentUserId) || members[0];
         if (partner) {
           chatName = partner.display_name;
           chatAvatar = partner.avatar_url;
         }
+      }
+
+      // Calculate unread count
+      let unreadCount = 0;
+      if (conv.last_read_at) {
+        const countRes = db.prepare(`
+          SELECT COUNT(*) as cnt FROM messages 
+          WHERE conversation_id = ? AND created_at > ? AND sender_id != ? AND is_deleted = 0
+        `).get(conv.id, conv.last_read_at, currentUserId) as any;
+        unreadCount = countRes?.cnt || 0;
+      } else {
+        const countRes = db.prepare(`
+          SELECT COUNT(*) as cnt FROM messages 
+          WHERE conversation_id = ? AND sender_id != ? AND is_deleted = 0
+        `).get(conv.id, currentUserId) as any;
+        unreadCount = countRes?.cnt || 0;
       }
 
       // Fetch pinned message if any
@@ -94,6 +117,12 @@ conversationsRouter.get('/', requireAuth, (req: AuthenticatedRequest, res) => {
         pinnedMessageId: conv.pinned_message_id || null,
         pinnedMessage,
         isSaved: Boolean(conv.is_saved),
+        isChannel: Boolean(conv.is_channel),
+        isPinned: Boolean(conv.is_pinned),
+        isMuted: Boolean(conv.is_muted),
+        isArchived: Boolean(conv.is_archived),
+        description: conv.description || '',
+        unreadCount,
         lastMessage: lastMessage
           ? {
               id: lastMessage.id,
@@ -488,5 +517,152 @@ conversationsRouter.get('/:id/search', requireAuth, (req: AuthenticatedRequest, 
   } catch (err) {
     console.error('Search messages error:', err);
     res.status(500).json({ error: 'Failed to search messages' });
+  }
+});
+
+// Mark conversation as read
+conversationsRouter.post('/:id/read', requireAuth, (req: AuthenticatedRequest, res) => {
+  const currentUserId = req.user!.userId;
+  const convId = req.params.id;
+  const now = new Date().toISOString();
+
+  try {
+    db.prepare(`
+      UPDATE conversation_members SET last_read_at = ? WHERE conversation_id = ? AND user_id = ?
+    `).run(now, convId, currentUserId);
+    res.json({ success: true, lastReadAt: now });
+  } catch (err) {
+    console.error('Mark read error:', err);
+    res.status(500).json({ error: 'Failed to mark as read' });
+  }
+});
+
+// Toggle pin chat for current user
+conversationsRouter.post('/:id/pin-chat', requireAuth, (req: AuthenticatedRequest, res) => {
+  const currentUserId = req.user!.userId;
+  const convId = req.params.id;
+
+  try {
+    const member = db.prepare(`
+      SELECT is_pinned FROM conversation_members WHERE conversation_id = ? AND user_id = ?
+    `).get(convId, currentUserId) as any;
+
+    if (!member) return res.status(404).json({ error: 'Chat not found' });
+
+    const newPinned = member.is_pinned === 1 ? 0 : 1;
+    db.prepare(`
+      UPDATE conversation_members SET is_pinned = ? WHERE conversation_id = ? AND user_id = ?
+    `).run(newPinned, convId, currentUserId);
+
+    res.json({ success: true, isPinned: Boolean(newPinned) });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to toggle pin' });
+  }
+});
+
+// Toggle mute chat for current user
+conversationsRouter.post('/:id/mute', requireAuth, (req: AuthenticatedRequest, res) => {
+  const currentUserId = req.user!.userId;
+  const convId = req.params.id;
+
+  try {
+    const member = db.prepare(`
+      SELECT is_muted FROM conversation_members WHERE conversation_id = ? AND user_id = ?
+    `).get(convId, currentUserId) as any;
+
+    if (!member) return res.status(404).json({ error: 'Chat not found' });
+
+    const newMuted = member.is_muted === 1 ? 0 : 1;
+    db.prepare(`
+      UPDATE conversation_members SET is_muted = ? WHERE conversation_id = ? AND user_id = ?
+    `).run(newMuted, convId, currentUserId);
+
+    res.json({ success: true, isMuted: Boolean(newMuted) });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to toggle mute' });
+  }
+});
+
+// Toggle archive chat for current user
+conversationsRouter.post('/:id/archive', requireAuth, (req: AuthenticatedRequest, res) => {
+  const currentUserId = req.user!.userId;
+  const convId = req.params.id;
+
+  try {
+    const member = db.prepare(`
+      SELECT is_archived FROM conversation_members WHERE conversation_id = ? AND user_id = ?
+    `).get(convId, currentUserId) as any;
+
+    if (!member) return res.status(404).json({ error: 'Chat not found' });
+
+    const newArchived = member.is_archived === 1 ? 0 : 1;
+    db.prepare(`
+      UPDATE conversation_members SET is_archived = ? WHERE conversation_id = ? AND user_id = ?
+    `).run(newArchived, convId, currentUserId);
+
+    res.json({ success: true, isArchived: Boolean(newArchived) });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to toggle archive' });
+  }
+});
+
+// Clear messages in conversation (for Saved Messages or clear history)
+conversationsRouter.post('/:id/clear', requireAuth, (req: AuthenticatedRequest, res) => {
+  const currentUserId = req.user!.userId;
+  const convId = req.params.id;
+
+  try {
+    const isMember = db.prepare(`
+      SELECT 1 FROM conversation_members WHERE conversation_id = ? AND user_id = ?
+    `).get(convId, currentUserId);
+
+    if (!isMember) return res.status(403).json({ error: 'Not allowed' });
+
+    db.prepare(`
+      UPDATE messages SET is_deleted = 1, text = 'История очищена' WHERE conversation_id = ?
+    `).run(convId);
+
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to clear conversation' });
+  }
+});
+
+// Create channel
+conversationsRouter.post('/channel', requireAuth, (req: AuthenticatedRequest, res) => {
+  const currentUserId = req.user!.userId;
+  const { name, description = '', avatarUrl } = req.body;
+
+  if (!name || name.trim() === '') {
+    return res.status(400).json({ error: 'Channel name is required' });
+  }
+
+  try {
+    const convId = crypto.randomUUID();
+    const now = new Date().toISOString();
+    const channelAvatar = avatarUrl || `https://api.dicebear.com/7.x/identicon/svg?seed=channel_${encodeURIComponent(name.trim())}`;
+
+    db.transaction(() => {
+      db.prepare(`
+        INSERT INTO conversations (id, type, name, avatar_url, description, is_channel, created_by, created_at, updated_at)
+        VALUES (?, 'group', ?, ?, ?, 1, ?, ?, ?)
+      `).run(convId, name.trim(), channelAvatar, description.trim(), currentUserId, now, now);
+
+      db.prepare(`
+        INSERT INTO conversation_members (conversation_id, user_id, role, last_read_at)
+        VALUES (?, ?, 'owner', ?)
+      `).run(convId, currentUserId, now);
+
+      const sysMsgId = crypto.randomUUID();
+      db.prepare(`
+        INSERT INTO messages (id, conversation_id, sender_id, text, type, created_at, updated_at)
+        VALUES (?, ?, ?, ?, 'text', ?, ?)
+      `).run(sysMsgId, convId, currentUserId, `Канал "${name.trim()}" создан`, now, now);
+    })();
+
+    res.json({ id: convId, isNew: true });
+  } catch (err) {
+    console.error('Create channel error:', err);
+    res.status(500).json({ error: 'Failed to create channel' });
   }
 });

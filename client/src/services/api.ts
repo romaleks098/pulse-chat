@@ -65,13 +65,16 @@ export const api = {
     return res.json();
   },
 
-  async updateProfile(data: { displayName?: string; avatarUrl?: string; statusText?: string }): Promise<User> {
+  async updateProfile(data: { username?: string; displayName?: string; avatarUrl?: string; statusText?: string; bio?: string; themeSettings?: any }): Promise<User> {
     const res = await fetch(`${API_BASE}/auth/profile`, {
       method: 'PUT',
       headers: getAuthHeaders(),
       body: JSON.stringify(data),
     });
-    if (!res.ok) throw new Error('Не удалось обновить профиль');
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'Не удалось обновить профиль');
+    }
     return res.json();
   },
 
@@ -168,6 +171,58 @@ export const api = {
       headers: getAuthHeaders(),
     });
     if (!res.ok) return [];
+    return res.json();
+  },
+
+  // Conversation Actions
+  async markConversationAsRead(conversationId: string): Promise<void> {
+    await fetch(`${API_BASE}/conversations/${conversationId}/read`, {
+      method: 'POST',
+      headers: getAuthHeaders(),
+    });
+  },
+
+  async togglePinChat(conversationId: string): Promise<{ success: boolean; isPinned: boolean }> {
+    const res = await fetch(`${API_BASE}/conversations/${conversationId}/pin-chat`, {
+      method: 'POST',
+      headers: getAuthHeaders(),
+    });
+    return res.json();
+  },
+
+  async toggleMuteChat(conversationId: string): Promise<{ success: boolean; isMuted: boolean }> {
+    const res = await fetch(`${API_BASE}/conversations/${conversationId}/mute`, {
+      method: 'POST',
+      headers: getAuthHeaders(),
+    });
+    return res.json();
+  },
+
+  async toggleArchiveChat(conversationId: string): Promise<{ success: boolean; isArchived: boolean }> {
+    const res = await fetch(`${API_BASE}/conversations/${conversationId}/archive`, {
+      method: 'POST',
+      headers: getAuthHeaders(),
+    });
+    return res.json();
+  },
+
+  async clearConversation(conversationId: string): Promise<void> {
+    await fetch(`${API_BASE}/conversations/${conversationId}/clear`, {
+      method: 'POST',
+      headers: getAuthHeaders(),
+    });
+  },
+
+  async createChannel(data: { name: string; description?: string; avatarUrl?: string }): Promise<{ id: string; isNew: boolean }> {
+    const res = await fetch(`${API_BASE}/conversations/channel`, {
+      method: 'POST',
+      headers: getAuthHeaders(),
+      body: JSON.stringify(data),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'Не удалось создать канал');
+    }
     return res.json();
   },
 

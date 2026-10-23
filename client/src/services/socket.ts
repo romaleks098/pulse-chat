@@ -2,6 +2,7 @@ import { io, Socket } from 'socket.io-client';
 import type { Message, Reaction } from '../types';
 
 let socket: Socket | null = null;
+const connectionListeners = new Set<(status: 'connected' | 'connecting' | 'disconnected') => void>();
 
 export const socketService = {
   connect(token: string): Socket {
@@ -22,13 +23,31 @@ export const socketService = {
 
     socket.on('connect', () => {
       console.log('⚡ Socket connected:', socket?.id);
+      connectionListeners.forEach((cb) => cb('connected'));
     });
 
     socket.on('connect_error', (err) => {
       console.error('Socket connect error:', err.message);
+      connectionListeners.forEach((cb) => cb('connecting'));
+    });
+
+    socket.on('disconnect', () => {
+      connectionListeners.forEach((cb) => cb('disconnected'));
     });
 
     return socket;
+  },
+
+  onConnectionChange(callback: (status: 'connected' | 'connecting' | 'disconnected') => void) {
+    connectionListeners.add(callback);
+    if (socket?.connected) {
+      callback('connected');
+    } else {
+      callback('connecting');
+    }
+    return () => {
+      connectionListeners.delete(callback);
+    };
   },
 
   getSocket(): Socket | null {

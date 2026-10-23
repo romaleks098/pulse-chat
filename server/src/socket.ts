@@ -301,6 +301,18 @@ export function setupSocketServer(io: Server) {
     // WebRTC Calling signaling events
     socket.on('call:start', ({ conversationId, isVideo }: { conversationId: string; isVideo: boolean }) => {
       try {
+        const conv = db.prepare('SELECT is_saved, type FROM conversations WHERE id = ?').get(conversationId) as any;
+        if (!conv || conv.is_saved === 1) {
+          socket.emit('call:error', { message: 'Нельзя позвонить в Избранное' });
+          return;
+        }
+
+        const otherMembers = db.prepare('SELECT user_id FROM conversation_members WHERE conversation_id = ? AND user_id != ?').all(conversationId, userId) as any[];
+        if (otherMembers.length === 0) {
+          socket.emit('call:error', { message: 'В чате нет других участников для звонка' });
+          return;
+        }
+
         const caller = db.prepare('SELECT display_name, avatar_url FROM users WHERE id = ?').get(userId) as any;
         socket.to(`conv_${conversationId}`).emit('call:incoming', {
           conversationId,

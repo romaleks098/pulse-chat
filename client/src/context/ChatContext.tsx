@@ -15,11 +15,12 @@ interface ChatContextType {
   onlineUserIds: Set<string>;
   typingUsers: string[];
   loadingMessages: boolean;
+  connectionStatus: 'connected' | 'connecting' | 'disconnected';
   login: (credentials: { username: string; password: string }) => Promise<void>;
   loginSocial: (provider: 'telegram' | 'google' | 'github', data: any) => Promise<void>;
   register: (data: { username: string; password: string; displayName: string; avatarUrl?: string }) => Promise<void>;
   logout: () => void;
-  updateProfile: (data: { displayName?: string; avatarUrl?: string; statusText?: string }) => Promise<void>;
+  updateProfile: (data: { username?: string; displayName?: string; avatarUrl?: string; statusText?: string; bio?: string; themeSettings?: any }) => Promise<void>;
   selectConversation: (id: string | null) => void;
   sendMessage: (data: {
     text: string;
@@ -40,6 +41,11 @@ interface ChatContextType {
   refreshConversations: () => Promise<void>;
   createDirectChat: (partnerId: string) => Promise<string>;
   createGroupChat: (data: { name: string; avatarUrl?: string; memberIds: string[] }) => Promise<string>;
+  createChannel: (data: { name: string; description?: string; avatarUrl?: string }) => Promise<string>;
+  togglePinChat: (conversationId: string) => Promise<void>;
+  toggleMuteChat: (conversationId: string) => Promise<void>;
+  toggleArchiveChat: (conversationId: string) => Promise<void>;
+  clearConversation: (conversationId: string) => Promise<void>;
 }
 
 const ChatContext = createContext<ChatContextType | undefined>(undefined);
@@ -48,11 +54,21 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [token, setToken] = useState<string | null>(localStorage.getItem('token'));
   const [conversations, setConversations] = useState<Conversation[]>([]);
-  const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
+  const [activeConversationId, setActiveConversationId] = useState<string | null>(() => {
+    return localStorage.getItem('pulse_active_conv_id');
+  });
   const [messages, setMessages] = useState<Message[]>([]);
   const [onlineUserIds, setOnlineUserIds] = useState<Set<string>>(new Set());
   const [typingMap, setTypingMap] = useState<Record<string, Record<string, string>>>({}); // convId -> { userId: name }
   const [loadingMessages, setLoadingMessages] = useState<boolean>(false);
+  const [connectionStatus, setConnectionStatus] = useState<'connected' | 'connecting' | 'disconnected'>('connecting');
+
+  useEffect(() => {
+    const unsub = socketService.onConnectionChange((status) => {
+      setConnectionStatus(status);
+    });
+    return unsub;
+  }, []);
 
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -148,6 +164,10 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
         );
       }
 
+      if (newMsg.conversationId === activeConversationId) {
+        api.markConversationAsRead(newMsg.conversationId).catch(() => {});
+      }
+
       setMessages((prev) => {
         if (newMsg.conversationId === activeConversationId) {
           // Avoid duplicate
@@ -165,10 +185,19 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
           return prev;
         }
 
+        const isCurrentActive = newMsg.conversationId === activeConversationId;
+
         const updated = prev.map((c) => {
           if (c.id === newMsg.conversationId) {
+            const newUnread = isCurrentActive
+              ? 0
+              : (currentUser && newMsg.senderId !== currentUser.id)
+              ? (c.unreadCount || 0) + 1
+              : c.unreadCount || 0;
+
             return {
               ...c,
+              unreadCount: newUnread,
               lastMessage: {
                 id: newMsg.id,
                 senderId: newMsg.senderId,
@@ -184,8 +213,8 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
           return c;
         });
 
-        // Sort by updatedAt descending
-        return updated.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+        // Sort by isPinned descending, then updatedAt descending
+        return updated.sort((a, b) => (Number(b.isPinned || 0) - Number(a.isPinned || 0)) || (new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()));
       });
     });
 
@@ -300,6 +329,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const logout = () => {
     localStorage.removeItem('token');
+    localStorage.removeItem('pulse_active_conv_id');
     setToken(null);
     setCurrentUser(null);
     setActiveConversationId(null);
@@ -307,13 +337,22 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
     socketService.disconnect();
   };
 
-  const updateProfile = async (data: { displayName?: string; avatarUrl?: string; statusText?: string }) => {
+  const updateProfile = async (data: { username?: string; displayName?: string; avatarUrl?: string; statusText?: string; bio?: string; themeSettings?: any }) => {
     const updated = await api.updateProfile(data);
     setCurrentUser(updated);
   };
 
   const selectConversation = (id: string | null) => {
     setActiveConversationId(id);
+    if (id) {
+      localStorage.setItem('pulse_active_conv_id', id);
+      api.markConversationAsRead(id).catch(() => {});
+      setConversations((prev) =>
+        prev.map((c) => (c.id === id ? { ...c, unreadCount: 0 } : c))
+      );
+    } else {
+      localStorage.removeItem('pulse_active_conv_id');
+    }
   };
 
   const sendMessage = (data: {
@@ -348,7 +387,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
     try {
       const res = await api.getOrCreateSavedMessages();
       await refreshConversations();
-      setActiveConversationId(res.id);
+      selectConversation(res.id);
     } catch (err) {
       console.error('Failed to open saved messages:', err);
     }
@@ -394,15 +433,69 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const createDirectChat = async (partnerId: string): Promise<string> => {
     const res = await api.createDirectChat(partnerId);
     await refreshConversations();
-    setActiveConversationId(res.id);
+    selectConversation(res.id);
     return res.id;
   };
 
   const createGroupChat = async (data: { name: string; avatarUrl?: string; memberIds: string[] }): Promise<string> => {
     const res = await api.createGroupChat(data);
     await refreshConversations();
-    setActiveConversationId(res.id);
+    selectConversation(res.id);
     return res.id;
+  };
+
+  const createChannel = async (data: { name: string; description?: string; avatarUrl?: string }): Promise<string> => {
+    const res = await api.createChannel(data);
+    await refreshConversations();
+    selectConversation(res.id);
+    return res.id;
+  };
+
+  const togglePinChat = async (conversationId: string) => {
+    try {
+      const res = await api.togglePinChat(conversationId);
+      setConversations((prev) =>
+        prev
+          .map((c) => (c.id === conversationId ? { ...c, isPinned: res.isPinned } : c))
+          .sort((a, b) => (Number(b.isPinned || 0) - Number(a.isPinned || 0)) || (new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()))
+      );
+    } catch (err) {
+      console.error('Failed to toggle pin chat:', err);
+    }
+  };
+
+  const toggleMuteChat = async (conversationId: string) => {
+    try {
+      const res = await api.toggleMuteChat(conversationId);
+      setConversations((prev) =>
+        prev.map((c) => (c.id === conversationId ? { ...c, isMuted: res.isMuted } : c))
+      );
+    } catch (err) {
+      console.error('Failed to toggle mute chat:', err);
+    }
+  };
+
+  const toggleArchiveChat = async (conversationId: string) => {
+    try {
+      const res = await api.toggleArchiveChat(conversationId);
+      setConversations((prev) =>
+        prev.map((c) => (c.id === conversationId ? { ...c, isArchived: res.isArchived } : c))
+      );
+    } catch (err) {
+      console.error('Failed to toggle archive chat:', err);
+    }
+  };
+
+  const clearConversation = async (conversationId: string) => {
+    try {
+      await api.clearConversation(conversationId);
+      if (activeConversationId === conversationId) {
+        setMessages([]);
+      }
+      await refreshConversations();
+    } catch (err) {
+      console.error('Failed to clear conversation:', err);
+    }
   };
 
   const activeConversation = conversations.find((c) => c.id === activeConversationId) || null;
@@ -422,6 +515,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
         onlineUserIds,
         typingUsers: activeTyping,
         loadingMessages,
+        connectionStatus,
         login,
         loginSocial,
         register,
@@ -439,6 +533,11 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
         refreshConversations,
         createDirectChat,
         createGroupChat,
+        createChannel,
+        togglePinChat,
+        toggleMuteChat,
+        toggleArchiveChat,
+        clearConversation,
       }}
     >
       {children}

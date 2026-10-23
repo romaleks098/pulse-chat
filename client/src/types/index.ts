@@ -4,6 +4,8 @@ export interface User {
   displayName: string;
   avatarUrl: string;
   statusText?: string;
+  bio?: string;
+  themeSettings?: string;
   lastSeen?: string;
   role?: string;
 }
@@ -53,6 +55,12 @@ export interface Conversation {
   pinnedMessageId?: string | null;
   pinnedMessage?: Message | null;
   isSaved?: boolean;
+  isChannel?: boolean;
+  isPinned?: boolean;
+  isMuted?: boolean;
+  isArchived?: boolean;
+  description?: string;
+  unreadCount?: number;
   lastMessage?: {
     id: string;
     senderId: string;
@@ -63,7 +71,6 @@ export interface Conversation {
     createdAt: string;
   } | null;
   updatedAt: string;
-  unreadCount?: number;
 }
 
 export interface NetworkInfo {

@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useChat } from '../context/ChatContext';
 import { useCall } from '../context/CallContext';
 import type { Message, ReplyInfo } from '../types';
-import { formatMessageTime, formatFileSize } from '../utils/format';
+import { formatMessageTime, formatFileSize, formatLastSeen, formatDateSeparator } from '../utils/format';
 import { api } from '../services/api';
 import { VoiceMessagePlayer } from './VoiceMessagePlayer';
 import { VoiceRecorder } from './VoiceRecorder';
@@ -27,19 +27,20 @@ import {
   Search,
   ChevronUp,
   ChevronDown,
+  Bookmark,
+  MessageCircle,
 } from 'lucide-react';
 
 const POPULAR_EMOJIS = ['👍', '❤️', '🔥', '😂', '😮', '😢', '👏', '🎉'];
 
 interface ChatAreaProps {
   onBack: () => void;
-  onOpenPhoneConnect: () => void;
+  onOpenPhoneConnect?: () => void;
   onImageClick: (url: string, fileName?: string) => void;
 }
 
 export const ChatArea: React.FC<ChatAreaProps> = ({
   onBack,
-  onOpenPhoneConnect,
   onImageClick,
 }) => {
   const {
@@ -218,18 +219,25 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
         <div className="flex items-center gap-3 min-w-0">
           <button
             onClick={onBack}
+            aria-label="Назад к списку чатов"
             className="md:hidden p-1.5 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition-colors"
           >
             <ArrowLeft className="w-5 h-5" />
           </button>
 
           <div className="relative shrink-0">
-            <img
-              src={activeConversation.avatarUrl}
-              alt={activeConversation.name}
-              className="w-10 h-10 rounded-full bg-slate-800 object-cover border border-slate-700"
-            />
-            {activeConversation.type === 'direct' && (
+            {activeConversation.isSaved ? (
+              <div className="w-10 h-10 rounded-full bg-gradient-to-tr from-amber-500 to-indigo-600 flex items-center justify-center text-white shadow-md">
+                <Bookmark className="w-5 h-5 fill-current" />
+              </div>
+            ) : (
+              <img
+                src={activeConversation.avatarUrl}
+                alt={activeConversation.name}
+                className="w-10 h-10 rounded-full bg-slate-800 object-cover border border-slate-700"
+              />
+            )}
+            {activeConversation.type === 'direct' && !activeConversation.isSaved && (
               <span
                 className={`absolute bottom-0 right-0 w-3 h-3 rounded-full border-2 border-slate-900 ${
                   isPartnerOnline ? 'bg-emerald-400' : 'bg-slate-500'
@@ -243,16 +251,20 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
               {activeConversation.name}
             </h2>
             <div className="text-[11px] truncate flex items-center gap-1.5">
-              {activeConversation.type === 'direct' ? (
-                isPartnerOnline ? (
-                  <span className="text-emerald-400 font-medium">В сети</span>
+              {activeConversation.isSaved ? (
+                <span className="text-slate-400">Ваши заметки и файлы</span>
+              ) : activeConversation.type === 'direct' ? (
+                typingUsers.length > 0 ? (
+                  <span className="text-indigo-400 font-medium">печатает…</span>
                 ) : (
-                  <span className="text-slate-400">Был(а) недавно</span>
+                  <span className={isPartnerOnline ? 'text-emerald-400 font-medium' : 'text-slate-400'}>
+                    {formatLastSeen(activeConversation.partner?.lastSeen, Boolean(isPartnerOnline))}
+                  </span>
                 )
               ) : (
                 <span className="text-slate-400 flex items-center gap-1">
                   <Users className="w-3 h-3" />
-                  {activeConversation.members.length} участников
+                  {activeConversation.members.length} {activeConversation.isChannel ? 'подписчиков' : 'участников'}
                 </span>
               )}
             </div>
@@ -264,6 +276,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
           <button
             onClick={() => setShowSearch((prev) => !prev)}
             title="Поиск сообщений в чате"
+            aria-label="Поиск сообщений в чате"
             className={`p-2 rounded-xl transition-colors cursor-pointer ${
               showSearch ? 'bg-indigo-600 text-white' : 'text-slate-300 hover:text-white hover:bg-slate-800'
             }`}
@@ -271,30 +284,27 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
             <Search className="w-4 h-4" />
           </button>
 
-          <button
-            onClick={() => startCall(activeConversation.id, false)}
-            title="Аудиозвонок"
-            className="p-2 text-slate-300 hover:text-white hover:bg-slate-800 rounded-xl transition-colors cursor-pointer"
-          >
-            <Phone className="w-4 h-4 text-emerald-400" />
-          </button>
+          {!activeConversation.isSaved && activeConversation.type === 'direct' && (
+            <>
+              <button
+                onClick={() => startCall(activeConversation.id, false)}
+                title="Аудиозвонок"
+                aria-label="Аудиозвонок"
+                className="p-2 text-slate-300 hover:text-white hover:bg-slate-800 rounded-xl transition-colors cursor-pointer"
+              >
+                <Phone className="w-4 h-4 text-emerald-400" />
+              </button>
 
-          <button
-            onClick={() => startCall(activeConversation.id, true)}
-            title="Видеозвонок"
-            className="p-2 text-slate-300 hover:text-white hover:bg-slate-800 rounded-xl transition-colors cursor-pointer"
-          >
-            <Video className="w-4 h-4 text-indigo-400" />
-          </button>
-
-          <button
-            onClick={onOpenPhoneConnect}
-            title="Открыть на телефоне"
-            className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-400 text-xs font-medium rounded-xl transition-colors ml-1"
-          >
-            <Smartphone className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">Телефон</span>
-          </button>
+              <button
+                onClick={() => startCall(activeConversation.id, true)}
+                title="Видеозвонок"
+                aria-label="Видеозвонок"
+                className="p-2 text-slate-300 hover:text-white hover:bg-slate-800 rounded-xl transition-colors cursor-pointer"
+              >
+                <Video className="w-4 h-4 text-indigo-400" />
+              </button>
+            </>
+          )}
         </div>
       </header>
 
@@ -366,21 +376,44 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
             <div className="w-8 h-8 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
           </div>
         ) : messages.length === 0 ? (
-          <div className="h-full flex flex-col items-center justify-center text-center text-slate-500 text-xs">
-            <div className="p-4 bg-slate-900/60 rounded-2xl border border-slate-800/80 mb-2">
-              👋 Начните общение первым!
+          <div className="h-full flex flex-col items-center justify-center text-center p-6 text-slate-400">
+            <div className="w-16 h-16 rounded-3xl bg-slate-900 border border-slate-800 flex items-center justify-center mb-3 text-indigo-400 shadow-xl">
+              {activeConversation.isSaved ? (
+                <Bookmark className="w-8 h-8 fill-current" />
+              ) : (
+                <MessageCircle className="w-8 h-8" />
+              )}
             </div>
+            <p className="text-sm font-semibold text-white mb-1">
+              {activeConversation.isSaved ? 'Ваши заметки и файлы' : 'Сообщений пока нет'}
+            </p>
+            <p className="text-xs text-slate-500 max-w-xs leading-relaxed">
+              {activeConversation.isSaved
+                ? 'Сохраняйте здесь важные мысли, голосовые заметки и файлы. Они синхронизированы на всех устройствах.'
+                : 'Отправьте первое сообщение, чтобы начать диалог!'}
+            </p>
           </div>
         ) : (
-          messages.map((msg) => {
+          messages.map((msg, idx) => {
             const isMe = msg.senderId === currentUser?.id;
+            const prevMsg = idx > 0 ? messages[idx - 1] : null;
+            const currentDateLabel = formatDateSeparator(msg.createdAt);
+            const prevDateLabel = prevMsg ? formatDateSeparator(prevMsg.createdAt) : null;
+            const showDateHeader = !prevMsg || currentDateLabel !== prevDateLabel;
 
             return (
-              <div
-                key={msg.id}
-                id={`msg-${msg.id}`}
-                className={`flex gap-2.5 group relative transition-all duration-300 rounded-2xl ${isMe ? 'justify-end' : 'justify-start'}`}
-              >
+              <React.Fragment key={msg.id}>
+                {showDateHeader && (
+                  <div className="flex justify-center my-3 sticky top-1 z-10 select-none">
+                    <span className="px-3 py-1 bg-slate-900/90 backdrop-blur-md border border-slate-800/80 text-slate-400 text-[11px] font-medium rounded-full shadow-sm">
+                      {currentDateLabel}
+                    </span>
+                  </div>
+                )}
+                <div
+                  id={`msg-${msg.id}`}
+                  className={`flex gap-2.5 group relative transition-all duration-300 rounded-2xl ${isMe ? 'justify-end' : 'justify-start'}`}
+                >
                 {!isMe && (
                   <img
                     src={msg.senderAvatar}
@@ -615,9 +648,10 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                   )}
                 </div>
               </div>
-            );
-          })
-        )}
+            </React.Fragment>
+          );
+        })
+      )}
 
         {/* Typing indicator bubble */}
         {typingUsers.length > 0 && (

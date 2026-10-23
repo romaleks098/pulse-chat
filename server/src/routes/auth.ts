@@ -619,7 +619,7 @@ authRouter.get('/telegram/callback', (req, res) => {
 
 authRouter.get('/me', requireAuth, (req: AuthenticatedRequest, res) => {
   try {
-    const user = db.prepare('SELECT id, username, display_name, avatar_url, status_text, last_seen, created_at FROM users WHERE id = ?').get(req.user!.userId) as any;
+    const user = db.prepare('SELECT id, username, display_name, avatar_url, status_text, bio, theme_settings, last_seen, created_at FROM users WHERE id = ?').get(req.user!.userId) as any;
     if (!user) {
       return res.status(404).json({ error: 'User not found' });
     }
@@ -630,6 +630,8 @@ authRouter.get('/me', requireAuth, (req: AuthenticatedRequest, res) => {
       displayName: user.display_name,
       avatarUrl: user.avatar_url,
       statusText: user.status_text,
+      bio: user.bio || '',
+      themeSettings: user.theme_settings || '',
       lastSeen: user.last_seen,
     });
   } catch (err) {
@@ -638,12 +640,24 @@ authRouter.get('/me', requireAuth, (req: AuthenticatedRequest, res) => {
 });
 
 authRouter.put('/profile', requireAuth, (req: AuthenticatedRequest, res) => {
-  const { displayName, avatarUrl, statusText } = req.body;
+  const { username, displayName, avatarUrl, statusText, bio, themeSettings } = req.body;
 
   try {
     const updates: string[] = [];
     const params: any[] = [];
 
+    if (username !== undefined) {
+      const cleanUser = username.trim().toLowerCase().replace(/[^a-z0-9_]/g, '');
+      if (cleanUser.length < 3) {
+        return res.status(400).json({ error: 'Имя пользователя должно быть не менее 3 символов' });
+      }
+      const existing = db.prepare('SELECT id FROM users WHERE username = ? AND id != ?').get(cleanUser, req.user!.userId);
+      if (existing) {
+        return res.status(400).json({ error: 'Это имя пользователя уже занято' });
+      }
+      updates.push('username = ?');
+      params.push(cleanUser);
+    }
     if (displayName !== undefined) {
       updates.push('display_name = ?');
       params.push(displayName.trim());
@@ -656,21 +670,32 @@ authRouter.put('/profile', requireAuth, (req: AuthenticatedRequest, res) => {
       updates.push('status_text = ?');
       params.push(statusText.trim());
     }
+    if (bio !== undefined) {
+      updates.push('bio = ?');
+      params.push(bio.trim());
+    }
+    if (themeSettings !== undefined) {
+      updates.push('theme_settings = ?');
+      params.push(typeof themeSettings === 'string' ? themeSettings : JSON.stringify(themeSettings));
+    }
 
     if (updates.length > 0) {
       params.push(req.user!.userId);
       db.prepare(`UPDATE users SET ${updates.join(', ')} WHERE id = ?`).run(...params);
     }
 
-    const updatedUser = db.prepare('SELECT id, username, display_name, avatar_url, status_text FROM users WHERE id = ?').get(req.user!.userId) as any;
+    const updatedUser = db.prepare('SELECT id, username, display_name, avatar_url, status_text, bio, theme_settings FROM users WHERE id = ?').get(req.user!.userId) as any;
     res.json({
       id: updatedUser.id,
       username: updatedUser.username,
       displayName: updatedUser.display_name,
       avatarUrl: updatedUser.avatar_url,
       statusText: updatedUser.status_text,
+      bio: updatedUser.bio || '',
+      themeSettings: updatedUser.theme_settings || '',
     });
   } catch (err) {
+    console.error('Update profile error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

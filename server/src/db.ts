@@ -104,6 +104,30 @@ export function initDatabase() {
     db.exec(`ALTER TABLE conversations ADD COLUMN is_saved INTEGER DEFAULT 0;`);
   } catch {}
   try {
+    db.exec(`ALTER TABLE conversations ADD COLUMN is_channel INTEGER DEFAULT 0;`);
+  } catch {}
+  try {
+    db.exec(`ALTER TABLE conversations ADD COLUMN description TEXT DEFAULT '';`);
+  } catch {}
+  try {
+    db.exec(`ALTER TABLE conversation_members ADD COLUMN last_read_at DATETIME;`);
+  } catch {}
+  try {
+    db.exec(`ALTER TABLE conversation_members ADD COLUMN is_pinned INTEGER DEFAULT 0;`);
+  } catch {}
+  try {
+    db.exec(`ALTER TABLE conversation_members ADD COLUMN is_muted INTEGER DEFAULT 0;`);
+  } catch {}
+  try {
+    db.exec(`ALTER TABLE conversation_members ADD COLUMN is_archived INTEGER DEFAULT 0;`);
+  } catch {}
+  try {
+    db.exec(`ALTER TABLE users ADD COLUMN bio TEXT DEFAULT '';`);
+  } catch {}
+  try {
+    db.exec(`ALTER TABLE users ADD COLUMN theme_settings TEXT DEFAULT '';`);
+  } catch {}
+  try {
     db.exec(`ALTER TABLE messages ADD COLUMN voice_duration REAL;`);
   } catch {}
 
