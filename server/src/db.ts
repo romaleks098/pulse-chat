@@ -9,30 +9,88 @@ import { migrations } from './migrations/schema.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const databaseUrl = process.env.DATABASE_URL?.trim();
-export const isPostgres = Boolean(databaseUrl && (databaseUrl.startsWith('postgres://') || databaseUrl.startsWith('postgresql://')));
+const isProduction = process.env.NODE_ENV === 'production';
+const rawDatabaseUrl = process.env.DATABASE_URL?.trim();
+const hasDatabaseUrl = Boolean(rawDatabaseUrl && rawDatabaseUrl.length > 0);
 
-// PostgreSQL Pool instance (used when DATABASE_URL is set)
+/**
+ * Sanitizes and safely encodes DATABASE_URL if user passed special characters
+ * (like '}' or brackets) in password without percent-encoding.
+ */
+export function sanitizeDatabaseUrl(rawUrl: string): string {
+  let url = rawUrl.trim();
+  // Strip optional quotes around string e.g. "postgresql://..."
+  if ((url.startsWith('"') && url.endsWith('"')) || (url.startsWith("'") && url.endsWith("'"))) {
+    url = url.slice(1, -1).trim();
+  }
+
+  // Extract protocol://user:password@host...
+  const match = url.match(/^(postgres(?:ql)?:\/\/)([^:]+):([^@]+)@(.+)$/);
+  if (match) {
+    const [, protocol, username, rawPassword, rest] = match;
+    let cleanPassword = rawPassword;
+    // Strip optional brackets around password e.g. [my_password]
+    if (cleanPassword.startsWith('[') && cleanPassword.endsWith(']')) {
+      cleanPassword = cleanPassword.slice(1, -1);
+    }
+    // Safely decode if already partially encoded, then encode special characters
+    try {
+      cleanPassword = decodeURIComponent(cleanPassword);
+    } catch {}
+    const safePassword = encodeURIComponent(cleanPassword);
+    return `${protocol}${username}:${safePassword}@${rest}`;
+  }
+  return url;
+}
+
+const sanitizedUrl = hasDatabaseUrl ? sanitizeDatabaseUrl(rawDatabaseUrl!) : '';
+export const isPostgres = Boolean(
+  sanitizedUrl && (sanitizedUrl.startsWith('postgres://') || sanitizedUrl.startsWith('postgresql://'))
+);
+
+// Logging provider status (without leaking secrets)
+console.log(`[Database] Provider: ${isPostgres ? 'PostgreSQL' : 'SQLite'} | DATABASE_URL: ${hasDatabaseUrl ? 'SET' : 'NOT SET'} | Environment: ${process.env.NODE_ENV || 'development'}`);
+
+// STRICT PRODUCTION CHECK: SQLite is strictly forbidden in production to prevent data loss on ephemeral disks
+if (isProduction) {
+  if (!hasDatabaseUrl) {
+    console.error('================================================================================');
+    console.error('❌ [FATAL CONFIG ERROR] Running in PRODUCTION (NODE_ENV=production) requires PostgreSQL.');
+    console.error('DATABASE_URL environment variable is NOT SET.');
+    console.error('Ephemeral SQLite is strictly prohibited in production to prevent loss of chats/messages.');
+    console.error('Please configure DATABASE_URL in your hosting environment (e.g. Render Dashboard -> Environment).');
+    console.error('================================================================================');
+    process.exit(1);
+  }
+
+  if (!isPostgres) {
+    console.error('================================================================================');
+    console.error('❌ [FATAL CONFIG ERROR] DATABASE_URL must start with postgresql:// or postgres://');
+    console.error('Server refusing to start on SQLite in production.');
+    console.error('================================================================================');
+    process.exit(1);
+  }
+}
+
+// PostgreSQL Pool instance
 let pgPool: pg.Pool | null = null;
 
-// SQLite Database instance (used when DATABASE_URL is NOT set, for local development)
+// SQLite Database instance (used only for local development when DATABASE_URL is not set)
 let sqliteDb: Database.Database | null = null;
 
 if (isPostgres) {
-  console.log('🐘 Initializing PostgreSQL database connection pool...');
   pgPool = new pg.Pool({
-    connectionString: databaseUrl,
-    ssl: databaseUrl!.includes('localhost') ? false : { rejectUnauthorized: false },
+    connectionString: sanitizedUrl,
+    ssl: sanitizedUrl.includes('localhost') ? false : { rejectUnauthorized: false },
     max: 20,
     idleTimeoutMillis: 30000,
     connectionTimeoutMillis: 10000,
   });
 
   pgPool.on('error', (err) => {
-    console.error('Unexpected error on idle PostgreSQL client:', err);
+    console.error('[Database] Unexpected error on idle PostgreSQL client:', err.message);
   });
 } else {
-  console.log('📁 Initializing local SQLite database...');
   const dataDir = path.join(__dirname, '..', 'data');
   if (!fs.existsSync(dataDir)) {
     fs.mkdirSync(dataDir, { recursive: true });
@@ -52,9 +110,6 @@ function translatePlaceholders(sql: string): string {
   return sql.replace(/(\?)(?=(?:[^']*'[^']*')*[^']*$)/g, () => `$${paramIndex++}`);
 }
 
-/**
- * Normalizes boolean/integer differences or date formatting if needed between engines.
- */
 function normalizeParams(params: any[]): any[] {
   return params.map((p) => {
     if (p === undefined) return null;
@@ -122,7 +177,6 @@ class PostgresDatabaseAdapter implements IDatabase {
 
   async transaction<T>(fn: (trx: IDatabase) => Promise<T>): Promise<T> {
     if (typeof this.client.connect === 'function') {
-      // Current client is the Pool, check out a client for transaction
       const client = await this.client.connect();
       const trxAdapter = new PostgresDatabaseAdapter(client);
       try {
@@ -137,7 +191,6 @@ class PostgresDatabaseAdapter implements IDatabase {
         client.release();
       }
     } else {
-      // Already inside a client
       try {
         await this.client.query('SAVEPOINT sp');
         const res = await fn(this);
@@ -198,7 +251,6 @@ class SQLiteDatabaseAdapter implements IDatabase {
   }
 
   async transaction<T>(fn: (trx: IDatabase) => Promise<T>): Promise<T> {
-    // Run inside BEGIN / COMMIT
     this.sqlite.exec('BEGIN');
     try {
       const res = await fn(this);
@@ -229,6 +281,20 @@ export const db: IDatabase = isPostgres
 export async function initDatabase() {
   console.log(`[Database] Initializing schema (${isPostgres ? 'PostgreSQL' : 'SQLite'})...`);
 
+  if (isPostgres) {
+    try {
+      await pgPool!.query('SELECT 1');
+      console.log('[Database] PostgreSQL connection verified successfully.');
+    } catch (err: any) {
+      console.error('[Database] PostgreSQL connection failed:', err.message);
+      if (isProduction) {
+        console.error('❌ [FATAL] Cannot connect to PostgreSQL in production. Aborting process.');
+        process.exit(1);
+      }
+      throw err;
+    }
+  }
+
   // Create migrations tracker table
   await db.exec(`
     CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -251,7 +317,6 @@ export async function initDatabase() {
         try {
           await db.exec(statement);
         } catch (stmtErr: any) {
-          // If table/index already exists, ignore and continue
           if (!stmtErr.message.includes('already exists') && !stmtErr.message.includes('duplicate')) {
             console.warn(`[Database] Warning during migration ${m.name}:`, stmtErr.message);
           }

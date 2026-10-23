@@ -5,7 +5,7 @@ import path from 'path';
 import fs from 'fs';
 import { Server } from 'socket.io';
 import { fileURLToPath } from 'url';
-import { initDatabase } from './db.js';
+import { initDatabase, isPostgres, db, getServerEpoch } from './db.js';
 import { authRouter } from './routes/auth.js';
 import { usersRouter } from './routes/users.js';
 import { conversationsRouter } from './routes/conversations.js';
@@ -57,12 +57,27 @@ app.use(
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Health check endpoint for Keep-Alive and readiness probes
-app.get('/api/health', (_req, res) => {
-  res.json({
-    status: 'ok',
+// Health check endpoint for Keep-Alive, monitoring, and database verification
+app.get('/api/health', async (_req, res) => {
+  let databaseOk = false;
+  let serverEpoch = '';
+
+  try {
+    const probe = await db.get('SELECT 1 as alive');
+    databaseOk = Boolean(probe && (probe.alive === 1 || probe.alive === '1'));
+    serverEpoch = await getServerEpoch();
+  } catch (err: any) {
+    console.error('[HealthCheck] DB probe failed:', err.message);
+  }
+
+  const statusCode = databaseOk ? 200 : 503;
+  res.status(statusCode).json({
+    status: databaseOk ? 'ok' : 'error',
+    provider: isPostgres ? 'postgres' : 'sqlite',
+    database_ok: databaseOk,
+    server_epoch: serverEpoch || null,
+    uptime: Math.round(process.uptime()),
     timestamp: new Date().toISOString(),
-    uptime: process.uptime(),
   });
 });
 
