@@ -3,6 +3,7 @@
   "appName": "PulseChat",
   "webDir": "dist",
   "server": {
+    "url": "https://pulse-chat-qel7.onrender.com",
     "cleartext": true
   }
 }

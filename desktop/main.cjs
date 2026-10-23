@@ -31,19 +31,13 @@ function createWindow() {
   });
 
   // Check if local Vite dev server is running
-  const req = http.get('http://localhost:5173', (res) => {
+  const req = http.get('http://localhost:5173', () => {
     mainWindow.loadURL('http://localhost:5173');
   });
 
   req.on('error', () => {
-    const fs = require('fs');
-    const localDist = path.join(__dirname, 'client_dist', 'index.html');
-    const parentDist = path.join(__dirname, '..', 'client', 'dist', 'index.html');
-    if (fs.existsSync(localDist)) {
-      mainWindow.loadFile(localDist);
-    } else {
-      mainWindow.loadFile(parentDist);
-    }
+    // Connect to live Render cloud server
+    mainWindow.loadURL('https://pulse-chat-qel7.onrender.com');
   });
 
   mainWindow.once('ready-to-show', () => {
