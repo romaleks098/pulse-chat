@@ -1,0 +1,13 @@
+{
+  "name": "pulse-chat-desktop",
+  "version": "1.0.0",
+  "description": "PulseChat Desktop App for Windows",
+  "main": "main.cjs",
+  "scripts": {
+    "start": "electron .",
+    "build:exe": "electron-builder --win portable"
+  },
+  "devDependencies": {
+    "electron": "^33.2.0"
+  }
+}

@@ -10,6 +10,7 @@
     "build:client": "cd client && npm run build",
     "build:server": "cd server && npm run build",
     "start": "cd server && node dist/index.js",
+    "desktop": "cd desktop && npm start",
     "cap:sync": "cd client && npm run cap:sync",
     "cap:android": "cd client && npm run cap:android"
   },
