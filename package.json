@@ -15,7 +15,7 @@
     "cap:sync": "cd client && npm run cap:sync",
     "cap:android": "cd client && npm run cap:android",
     "check:secrets": "node scripts/check_secrets.js",
-    "test:stages": "node scripts/test_stages_3_4.js && node scripts/test_db_heal_saved.js",
+    "test:stages": "node scripts/test_stages_3_4.js && node scripts/test_db_heal_saved.js && node scripts/test_stages_5_6_7.js",
     "test": "npm run test:stages"
   },
   "devDependencies": {

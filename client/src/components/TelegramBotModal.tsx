@@ -150,7 +150,7 @@ export const TelegramBotModal: React.FC<TelegramBotModalProps> = ({ isOpen, onCl
       ) : (
         <div className="space-y-5">
           {/* QR Code Container */}
-          <div className="bg-slate-950/70 p-5 rounded-2xl border border-slate-800 flex flex-col items-center">
+          <div className="bg-[var(--bg-input,#080c14)] p-5 rounded-2xl border border-[var(--border-subtle,rgba(255,255,255,0.08))] flex flex-col items-center">
             <div className="bg-white p-3.5 rounded-2xl shadow-xl mb-3 relative group">
               {botSession && (
                 <QRCodeSVG
@@ -162,7 +162,7 @@ export const TelegramBotModal: React.FC<TelegramBotModalProps> = ({ isOpen, onCl
               )}
             </div>
 
-            <div className="flex items-center gap-2 text-xs font-medium text-slate-400 mt-1">
+            <div className="flex items-center gap-2 text-xs font-medium text-[var(--text-secondary,#94a3b8)] mt-1">
               <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
               <span>{statusText}</span>
             </div>
@@ -205,7 +205,7 @@ export const TelegramBotModal: React.FC<TelegramBotModalProps> = ({ isOpen, onCl
           </div>
 
           {/* Instruction helper */}
-          <div className="p-3.5 rounded-xl bg-slate-950/40 border border-slate-800/80 text-xs text-slate-400 flex items-start gap-2.5">
+          <div className="p-3.5 rounded-xl bg-[var(--bg-input,#080c14)] border border-[var(--border-subtle,rgba(255,255,255,0.08))] text-xs text-[var(--text-secondary,#94a3b8)] flex items-start gap-2.5">
             <ShieldCheck className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
             <span>
               Вам не нужно вводить пароль. После нажатия <strong>/start</strong> в Telegram сессия подтвердится мгновенно по WebSocket.

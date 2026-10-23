@@ -228,12 +228,12 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({ isOpen, onClose }) =
         {/* Circular Image Crop Overlay Modal */}
         {cropImageSrc && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-150">
-            <div className="w-full max-w-sm bg-slate-900 border border-slate-800 rounded-3xl p-5 shadow-2xl text-slate-200">
-              <h3 className="text-sm font-bold text-white mb-1">Кадрирование фото</h3>
-              <p className="text-xs text-slate-400 mb-4">Настройте масштаб круглой аватарки</p>
+            <div className="w-full max-w-sm bg-[var(--bg-surface,#141d33)] border border-[var(--border-subtle,rgba(255,255,255,0.08))] rounded-3xl p-5 shadow-2xl text-[var(--text-primary,#f8fafc)]">
+              <h3 className="text-sm font-bold text-[var(--text-primary,#f8fafc)] mb-1">Кадрирование фото</h3>
+              <p className="text-xs text-[var(--text-secondary,#94a3b8)] mb-4">Настройте масштаб круглой аватарки</p>
 
               <div className="flex flex-col items-center">
-                <div className="relative w-48 h-48 rounded-full overflow-hidden border-4 border-indigo-500 shadow-xl bg-black mb-4 flex items-center justify-center">
+                <div className="relative w-48 h-48 rounded-full overflow-hidden border-4 border-[var(--accent-default,#6366f1)] shadow-xl bg-black mb-4 flex items-center justify-center">
                   <img
                     src={cropImageSrc}
                     alt="crop preview"
@@ -243,7 +243,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({ isOpen, onClose }) =
                 </div>
 
                 <div className="w-full max-w-xs space-y-1 mb-5">
-                  <div className="flex justify-between text-[11px] text-slate-400">
+                  <div className="flex justify-between text-[11px] text-[var(--text-secondary,#94a3b8)]">
                     <span>Масштаб</span>
                     <span>{Math.round(cropZoom * 100)}%</span>
                   </div>
@@ -254,16 +254,16 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({ isOpen, onClose }) =
                     step="0.05"
                     value={cropZoom}
                     onChange={(e) => setCropZoom(parseFloat(e.target.value))}
-                    className="w-full accent-indigo-500 cursor-pointer"
+                    className="w-full accent-[var(--accent-default,#6366f1)] cursor-pointer"
                   />
                 </div>
               </div>
 
-              <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-800">
+              <div className="flex items-center justify-end gap-2 pt-2 border-t border-[var(--border-subtle,rgba(255,255,255,0.08))]">
                 <button
                   type="button"
                   onClick={() => setCropImageSrc(null)}
-                  className="px-3.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium rounded-xl transition-colors cursor-pointer"
+                  className="px-3.5 py-1.5 bg-[var(--bg-surface-hover,rgba(255,255,255,0.08))] hover:bg-[var(--bg-input,#0b101e)] border border-[var(--border-subtle,rgba(255,255,255,0.08))] text-[var(--text-secondary,#cbd5e1)] text-xs font-medium rounded-xl transition-colors cursor-pointer"
                 >
                   Отмена
                 </button>
@@ -271,7 +271,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({ isOpen, onClose }) =
                   type="button"
                   disabled={uploadingCustom}
                   onClick={handleApplyCroppedAvatar}
-                  className="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold rounded-xl shadow-lg shadow-indigo-600/30 transition-all flex items-center gap-1.5 cursor-pointer"
+                  className="px-4 py-1.5 bg-[var(--accent-default,#6366f1)] hover:bg-[var(--accent-hover,#4f46e5)] text-white text-xs font-semibold rounded-xl shadow-lg shadow-[var(--accent-default,#6366f1)]/30 transition-all flex items-center gap-1.5 cursor-pointer"
                 >
                   {uploadingCustom && <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />}
                   <span>Применить</span>

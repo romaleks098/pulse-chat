@@ -408,11 +408,11 @@ export const RightInfoPanel: React.FC<RightInfoPanelProps> = ({
       {/* Clear Confirmation Modal */}
       {showClearConfirm && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm animate-in fade-in duration-150">
-          <div className="w-full max-w-sm bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-2xl text-slate-200">
-            <h3 className="text-base font-bold text-white mb-2">
+          <div className="w-full max-w-sm bg-[var(--bg-surface,#141d33)] border border-[var(--border-subtle,rgba(255,255,255,0.08))] rounded-3xl p-6 shadow-2xl text-[var(--text-primary,#f8fafc)]">
+            <h3 className="text-base font-bold text-[var(--text-primary,#f8fafc)] mb-2">
               {isSaved ? 'Очистить заметки?' : 'Очистить историю?'}
             </h3>
-            <p className="text-xs text-slate-400 mb-6 leading-relaxed">
+            <p className="text-xs text-[var(--text-secondary,#94a3b8)] mb-6 leading-relaxed">
               {isSaved
                 ? 'Все ваши сохранённые заметки и файлы в этом чате будут удалены.'
                 : 'Все сообщения в этом чате будут безвозвратно удалены. Вы уверены?'}
@@ -421,14 +421,14 @@ export const RightInfoPanel: React.FC<RightInfoPanelProps> = ({
               <button
                 type="button"
                 onClick={() => setShowClearConfirm(false)}
-                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium rounded-xl transition-colors cursor-pointer"
+                className="px-4 py-2 bg-[var(--bg-surface-hover,rgba(255,255,255,0.08))] hover:bg-[var(--bg-input,#080c14)] border border-[var(--border-subtle,rgba(255,255,255,0.08))] text-[var(--text-secondary,#cbd5e1)] text-xs font-medium rounded-xl transition-colors cursor-pointer"
               >
                 Отмена
               </button>
               <button
                 type="button"
                 onClick={handleClear}
-                className="px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white text-xs font-medium rounded-xl transition-colors cursor-pointer shadow-lg shadow-rose-600/30"
+                className="px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold rounded-xl transition-colors cursor-pointer shadow-lg shadow-rose-600/30"
               >
                 Очистить
               </button>

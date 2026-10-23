@@ -3,23 +3,29 @@ import React, { createContext, useContext, useState, useEffect, useMemo, useCall
 export type ThemePreset = 'classic-dark' | 'telegram-dark' | 'oled-black' | 'light' | 'emerald' | 'rose' | 'system';
 export type ChatDensity = 'compact' | 'normal' | 'spacious';
 export type AnimationMode = 'enabled' | 'reduced';
+export type FontFamily = 'system' | 'inter' | 'mono';
 
 export interface ChatWallpaper {
   type: 'pattern' | 'solid' | 'gradient' | 'image';
   value: string;
-  blur?: number;
-  opacity?: number;
+  pattern?: 'none' | 'stars' | 'geometry' | 'subtle';
+  blur?: number; // 0 to 20 px
+  dimming?: number; // 0 to 80 %
+  opacity?: number; // pattern opacity 0 to 1
 }
 
 export interface ThemeSettings {
   preset: ThemePreset;
   customAccent: string | null;
-  bubbleRadius: number; // 8 to 24 px
-  fontSize: number; // 12 to 18 px
+  customBubbleOut: string | null;
+  bubbleRadius: number; // 4 to 20 px
+  fontSize: number; // 13 to 20 px
   density: ChatDensity;
+  fontFamily: FontFamily;
   animations: AnimationMode;
+  glassmorphism: boolean;
   wallpaper: ChatWallpaper;
-  sidebarWidth: number; // 280 to 460 px
+  sidebarWidth: number; // 260 to 500 px
   showRightPanel: boolean;
 }
 
@@ -28,10 +34,13 @@ interface ThemeContextType {
   resolvedTheme: 'dark' | 'light';
   setThemePreset: (preset: ThemePreset) => void;
   setCustomAccent: (color: string | null) => void;
+  setCustomBubbleOut: (color: string | null) => void;
   setBubbleRadius: (radius: number) => void;
   setFontSize: (size: number) => void;
   setDensity: (density: ChatDensity) => void;
+  setFontFamily: (family: FontFamily) => void;
   setAnimations: (mode: AnimationMode) => void;
+  setGlassmorphism: (enabled: boolean) => void;
   setWallpaper: (wallpaper: ChatWallpaper) => void;
   setSidebarWidth: (width: number) => void;
   setShowRightPanel: (show: boolean | ((prev: boolean) => boolean)) => void;
@@ -43,14 +52,19 @@ interface ThemeContextType {
 const DEFAULT_SETTINGS: ThemeSettings = {
   preset: 'classic-dark',
   customAccent: null,
-  bubbleRadius: 18,
+  customBubbleOut: null,
+  bubbleRadius: 16,
   fontSize: 14,
   density: 'normal',
+  fontFamily: 'system',
   animations: 'enabled',
+  glassmorphism: true,
   wallpaper: {
-    type: 'pattern',
-    value: 'stars',
+    type: 'gradient',
+    value: 'linear-gradient(135deg, #090d16 0%, #131b2e 50%, #1f1d36 100%)',
+    pattern: 'stars',
     blur: 0,
+    dimming: 0,
     opacity: 0.15,
   },
   sidebarWidth: 340,
@@ -298,8 +312,14 @@ export const ThemeProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       root.style.setProperty('--accent-default', settings.customAccent);
       root.style.setProperty('--accent-hover', settings.customAccent);
       root.style.setProperty('--accent-subtle', `${settings.customAccent}26`); // 15% alpha
-      root.style.setProperty('--bubble-out', settings.customAccent);
       root.style.setProperty('--badge-unread-bg', settings.customAccent);
+    }
+
+    // Apply custom outgoing bubble if set
+    if (settings.customBubbleOut) {
+      root.style.setProperty('--bubble-out', settings.customBubbleOut);
+    } else if (settings.customAccent) {
+      root.style.setProperty('--bubble-out', settings.customAccent);
     }
 
     // Apply typography & geometry
@@ -307,6 +327,19 @@ export const ThemeProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     root.style.setProperty('--msg-font-size', `${settings.fontSize}px`);
     root.style.setProperty('--bubble-radius', `${settings.bubbleRadius}px`);
     root.style.setProperty('--sidebar-width', `${settings.sidebarWidth}px`);
+
+    // Font family selection
+    const fontFamilyStr =
+      settings.fontFamily === 'inter'
+        ? `'Inter', system-ui, -apple-system, BlinkMacSystemFont, sans-serif`
+        : settings.fontFamily === 'mono'
+        ? `'JetBrains Mono', 'Fira Code', 'Courier New', monospace`
+        : `system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif`;
+    root.style.setProperty('--font-family', fontFamilyStr);
+    root.style.fontFamily = fontFamilyStr;
+
+    // Glassmorphism blur
+    root.style.setProperty('--glass-blur', settings.glassmorphism ? '16px' : '0px');
 
     // Ensure incoming bubble compatibility alias
     if (presetTokens['--bubble-in']) {
@@ -348,20 +381,32 @@ export const ThemeProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     setSettings((s) => ({ ...s, customAccent: color }));
   }, []);
 
+  const setCustomBubbleOut = useCallback((color: string | null) => {
+    setSettings((s) => ({ ...s, customBubbleOut: color }));
+  }, []);
+
   const setBubbleRadius = useCallback((radius: number) => {
-    setSettings((s) => ({ ...s, bubbleRadius: Math.max(8, Math.min(28, radius)) }));
+    setSettings((s) => ({ ...s, bubbleRadius: Math.max(4, Math.min(20, radius)) }));
   }, []);
 
   const setFontSize = useCallback((size: number) => {
-    setSettings((s) => ({ ...s, fontSize: Math.max(12, Math.min(18, size)) }));
+    setSettings((s) => ({ ...s, fontSize: Math.max(13, Math.min(20, size)) }));
   }, []);
 
   const setDensity = useCallback((density: ChatDensity) => {
     setSettings((s) => ({ ...s, density }));
   }, []);
 
+  const setFontFamily = useCallback((fontFamily: FontFamily) => {
+    setSettings((s) => ({ ...s, fontFamily }));
+  }, []);
+
   const setAnimations = useCallback((mode: AnimationMode) => {
     setSettings((s) => ({ ...s, animations: mode }));
+  }, []);
+
+  const setGlassmorphism = useCallback((glassmorphism: boolean) => {
+    setSettings((s) => ({ ...s, glassmorphism }));
   }, []);
 
   const setWallpaper = useCallback((wallpaper: ChatWallpaper) => {
@@ -369,7 +414,7 @@ export const ThemeProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   }, []);
 
   const setSidebarWidth = useCallback((width: number) => {
-    setSettings((s) => ({ ...s, sidebarWidth: Math.max(260, Math.min(460, width)) }));
+    setSettings((s) => ({ ...s, sidebarWidth: Math.max(260, Math.min(500, width)) }));
   }, []);
 
   const setShowRightPanel = useCallback((show: boolean | ((prev: boolean) => boolean)) => {
@@ -391,7 +436,13 @@ export const ThemeProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     try {
       const parsed = JSON.parse(jsonStr);
       if (typeof parsed === 'object' && parsed !== null) {
-        setSettings((prev) => ({ ...prev, ...parsed }));
+        setSettings((prev) => ({
+          ...prev,
+          ...parsed,
+          bubbleRadius: Math.max(4, Math.min(20, Number(parsed.bubbleRadius ?? prev.bubbleRadius))),
+          fontSize: Math.max(13, Math.min(20, Number(parsed.fontSize ?? prev.fontSize))),
+          sidebarWidth: Math.max(260, Math.min(500, Number(parsed.sidebarWidth ?? prev.sidebarWidth))),
+        }));
         return true;
       }
     } catch {}
@@ -405,10 +456,13 @@ export const ThemeProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         resolvedTheme,
         setThemePreset,
         setCustomAccent,
+        setCustomBubbleOut,
         setBubbleRadius,
         setFontSize,
         setDensity,
+        setFontFamily,
         setAnimations,
+        setGlassmorphism,
         setWallpaper,
         setSidebarWidth,
         setShowRightPanel,

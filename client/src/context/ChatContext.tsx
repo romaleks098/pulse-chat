@@ -38,6 +38,7 @@ interface ChatContextType {
     voiceDuration?: number;
     replyToId?: string;
   }) => void;
+  forwardMessage: (msg: Message, targetConversationId: string) => Promise<void>;
   pinMessage: (messageId: string | null) => Promise<void>;
   openSavedMessages: () => Promise<void>;
   startTyping: () => void;
@@ -704,6 +705,50 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
     stopTyping();
   };
 
+  const forwardMessage = async (msg: Message, targetConversationId: string) => {
+    if (!currentUser || !targetConversationId) return;
+    const clientMessageId = `f_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const forwardHeader = `↪️ Переслано от ${msg.senderName}:\n`;
+    const textToSend = msg.text ? `${forwardHeader}${msg.text}` : forwardHeader;
+
+    if (activeConversationId === targetConversationId) {
+      const optimisticMsg: Message = {
+        id: clientMessageId,
+        clientMessageId,
+        conversationId: targetConversationId,
+        senderId: currentUser.id,
+        senderUsername: currentUser.username,
+        senderName: currentUser.displayName || currentUser.username,
+        senderAvatar: currentUser.avatarUrl || '',
+        text: textToSend,
+        type: msg.type || 'text',
+        fileUrl: msg.fileUrl,
+        fileName: msg.fileName,
+        fileSize: msg.fileSize,
+        voiceDuration: msg.voiceDuration,
+        reactions: [],
+        isDeleted: false,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        pending: true,
+      };
+      setMessages((prev) => [...prev, optimisticMsg]);
+    }
+
+    socketService.sendMessage({
+      conversationId: targetConversationId,
+      text: textToSend,
+      type: msg.type || 'text',
+      fileUrl: msg.fileUrl,
+      fileName: msg.fileName,
+      fileSize: msg.fileSize,
+      voiceDuration: msg.voiceDuration,
+      clientMessageId,
+    });
+
+    soundService.playMessageSent();
+  };
+
   const pinMessage = async (messageId: string | null) => {
     if (!activeConversationId) return;
     try {
@@ -891,6 +936,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
         updateProfile,
         selectConversation,
         sendMessage,
+        forwardMessage,
         pinMessage,
         openSavedMessages,
         startTyping,

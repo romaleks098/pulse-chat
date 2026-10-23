@@ -31,6 +31,8 @@ import {
   Sun,
   Palette,
   Trash2,
+  Users,
+  Contact,
 } from 'lucide-react';
 
 interface SidebarProps {
@@ -124,7 +126,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const filteredConversations = otherConversations.filter((c) => {
     const matchesFilter =
       filter === 'all' ||
-      (filter === 'direct' && c.type === 'direct' && !c.isChannel) ||
+      (filter === 'direct' && c.type === 'direct' && !c.isSaved && !c.isChannel) ||
       (filter === 'group' && c.type === 'group' && !c.isChannel) ||
       (filter === 'channel' && c.isChannel);
 
@@ -139,7 +141,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   // Calculate unread counters for each folder tab
   const unreadAll = conversations.reduce((acc, c) => acc + (c.unreadCount || 0), 0);
   const unreadDirect = otherConversations
-    .filter((c) => c.type === 'direct' && !c.isChannel)
+    .filter((c) => c.type === 'direct' && !c.isSaved && !c.isChannel)
     .reduce((acc, c) => acc + (c.unreadCount || 0), 0);
   const unreadGroup = otherConversations
     .filter((c) => c.type === 'group' && !c.isChannel)
@@ -311,9 +313,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
           <Search className="w-4 h-4 text-[var(--text-muted,#64748b)] absolute left-3 top-1/2 -translate-y-1/2" />
           <input
             type="text"
+            data-search="global"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Поиск чатов и сообщений..."
+            placeholder="Поиск (Ctrl+K)..."
             className="w-full pl-9 pr-7 py-1.5 bg-[var(--bg-input,#080c14)] border border-[var(--border-subtle,rgba(255,255,255,0.08))] rounded-xl text-xs text-[var(--text-primary,#f8fafc)] placeholder-[var(--text-muted,#64748b)] focus:outline-none focus:border-[var(--accent-default,#6366f1)] transition-all"
           />
           {search && (
@@ -592,13 +595,19 @@ export const Sidebar: React.FC<SidebarProps> = ({
           {/* Drawer content */}
           <div className="relative w-72 max-w-[85vw] h-full bg-[var(--bg-sidebar,#0e131f)] shadow-2xl flex flex-col z-10 animate-in slide-in-from-left duration-200 border-r border-[var(--border-subtle,rgba(255,255,255,0.08))]">
             {/* User Profile Banner in Drawer */}
-            <div className="p-5 bg-[var(--bg-app,#090d16)]/60 border-b border-[var(--border-subtle,rgba(255,255,255,0.08))]">
+            <div
+              onClick={() => {
+                setIsDrawerOpen(false);
+                onOpenProfile();
+              }}
+              className="p-5 bg-[var(--bg-surface,#141d33)] border-b border-[var(--border-subtle,rgba(255,255,255,0.08))] cursor-pointer hover:bg-[var(--bg-surface-hover,rgba(255,255,255,0.05))] transition-colors group"
+            >
               <Avatar
                 src={currentUser?.avatarUrl}
                 name={currentUser?.displayName || 'Пользователь'}
                 size="xl"
                 isOnline={true}
-                className="mb-3"
+                className="mb-3 group-hover:scale-105 transition-transform"
               />
               <div className="text-sm font-bold text-[var(--text-primary,#f8fafc)] truncate">
                 {currentUser?.displayName}
@@ -615,7 +624,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   setIsDrawerOpen(false);
                   onOpenProfile();
                 }}
-                className="w-full flex items-center gap-3.5 px-3 py-2.5 rounded-xl text-xs font-medium text-[var(--text-primary,#f8fafc)] hover:bg-white/5 active:scale-98 transition-all cursor-pointer"
+                className="w-full flex items-center gap-3.5 px-3 py-2.5 rounded-xl text-xs font-medium text-[var(--text-primary,#f8fafc)] hover:bg-[var(--bg-surface-hover,rgba(255,255,255,0.05))] active:scale-98 transition-all cursor-pointer"
               >
                 <User className="w-4 h-4 text-[var(--accent-default,#6366f1)]" />
                 <span>Мой профиль</span>
@@ -626,7 +635,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   setIsDrawerOpen(false);
                   openSavedMessages();
                 }}
-                className="w-full flex items-center gap-3.5 px-3 py-2.5 rounded-xl text-xs font-medium text-[var(--text-primary,#f8fafc)] hover:bg-white/5 active:scale-98 transition-all cursor-pointer"
+                className="w-full flex items-center gap-3.5 px-3 py-2.5 rounded-xl text-xs font-medium text-[var(--text-primary,#f8fafc)] hover:bg-[var(--bg-surface-hover,rgba(255,255,255,0.05))] active:scale-98 transition-all cursor-pointer"
               >
                 <Bookmark className="w-4 h-4 text-amber-400" />
                 <span>Избранное</span>
@@ -635,9 +644,31 @@ export const Sidebar: React.FC<SidebarProps> = ({
               <button
                 onClick={() => {
                   setIsDrawerOpen(false);
+                  onOpenNewChat();
+                }}
+                className="w-full flex items-center gap-3.5 px-3 py-2.5 rounded-xl text-xs font-medium text-[var(--text-primary,#f8fafc)] hover:bg-[var(--bg-surface-hover,rgba(255,255,255,0.05))] active:scale-98 transition-all cursor-pointer"
+              >
+                <Users className="w-4 h-4 text-emerald-400" />
+                <span>Создать группу/канал</span>
+              </button>
+
+              <button
+                onClick={() => {
+                  setIsDrawerOpen(false);
+                  onOpenNewChat();
+                }}
+                className="w-full flex items-center gap-3.5 px-3 py-2.5 rounded-xl text-xs font-medium text-[var(--text-primary,#f8fafc)] hover:bg-[var(--bg-surface-hover,rgba(255,255,255,0.05))] active:scale-98 transition-all cursor-pointer"
+              >
+                <Contact className="w-4 h-4 text-sky-400" />
+                <span>Контакты</span>
+              </button>
+
+              <button
+                onClick={() => {
+                  setIsDrawerOpen(false);
                   onOpenSettings();
                 }}
-                className="w-full flex items-center gap-3.5 px-3 py-2.5 rounded-xl text-xs font-medium text-[var(--text-primary,#f8fafc)] hover:bg-white/5 active:scale-98 transition-all cursor-pointer"
+                className="w-full flex items-center gap-3.5 px-3 py-2.5 rounded-xl text-xs font-medium text-[var(--text-primary,#f8fafc)] hover:bg-[var(--bg-surface-hover,rgba(255,255,255,0.05))] active:scale-98 transition-all cursor-pointer"
               >
                 <Palette className="w-4 h-4 text-indigo-400" />
                 <span>Настройки и оформление</span>
@@ -648,28 +679,28 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   setIsDrawerOpen(false);
                   onOpenPhoneConnect();
                 }}
-                className="w-full flex items-center gap-3.5 px-3 py-2.5 rounded-xl text-xs font-medium text-[var(--text-primary,#f8fafc)] hover:bg-white/5 active:scale-98 transition-all cursor-pointer"
+                className="w-full flex items-center gap-3.5 px-3 py-2.5 rounded-xl text-xs font-medium text-[var(--text-primary,#f8fafc)] hover:bg-[var(--bg-surface-hover,rgba(255,255,255,0.05))] active:scale-98 transition-all cursor-pointer"
               >
-                <Smartphone className="w-4 h-4 text-emerald-400" />
+                <Smartphone className="w-4 h-4 text-teal-400" />
                 <span>Подключить телефон (Android)</span>
               </button>
 
-              {/* Night Mode Toggle */}
+              {/* Night Mode Toggle with smooth icon animation */}
               <div
                 onClick={handleToggleNightMode}
-                className="w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-xs font-medium text-[var(--text-primary,#f8fafc)] hover:bg-white/5 cursor-pointer transition-all"
+                className="w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-xs font-medium text-[var(--text-primary,#f8fafc)] hover:bg-[var(--bg-surface-hover,rgba(255,255,255,0.05))] cursor-pointer transition-all group"
               >
                 <div className="flex items-center gap-3.5">
                   {resolvedTheme === 'dark' ? (
-                    <Moon className="w-4 h-4 text-indigo-400" />
+                    <Moon className="w-4 h-4 text-indigo-400 transition-transform duration-300 group-hover:-rotate-12" />
                   ) : (
-                    <Sun className="w-4 h-4 text-amber-400" />
+                    <Sun className="w-4 h-4 text-amber-400 transition-transform duration-300 group-hover:rotate-45" />
                   )}
                   <span>Ночной режим</span>
                 </div>
                 <div
                   className={`w-9 h-5 rounded-full p-0.5 transition-colors duration-200 ${
-                    resolvedTheme === 'dark' ? 'bg-[var(--accent-default,#6366f1)]' : 'bg-slate-600'
+                    resolvedTheme === 'dark' ? 'bg-[var(--accent-default,#6366f1)]' : 'bg-slate-400 dark:bg-slate-600'
                   }`}
                 >
                   <div
@@ -713,14 +744,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
       {/* Logout Confirmation Modal */}
       {isLogoutModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm animate-in fade-in duration-150">
-          <div className="w-full max-w-sm bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-2xl text-slate-200">
+          <div className="w-full max-w-sm bg-[var(--bg-surface,#141d33)] border border-[var(--border-subtle,rgba(255,255,255,0.08))] rounded-3xl p-6 shadow-2xl text-[var(--text-primary,#f8fafc)]">
             <div className="flex items-center gap-3 mb-4">
               <div className="w-10 h-10 rounded-2xl bg-rose-500/10 border border-rose-500/20 flex items-center justify-center text-rose-400 shrink-0">
                 <AlertCircle className="w-5 h-5" />
               </div>
               <div>
-                <h3 className="text-base font-bold text-white">Выйти из аккаунта?</h3>
-                <p className="text-xs text-slate-400">Вам потребуется повторно войти в PulseChat</p>
+                <h3 className="text-base font-bold text-[var(--text-primary,#f8fafc)]">Выйти из аккаунта?</h3>
+                <p className="text-xs text-[var(--text-secondary,#94a3b8)]">Вам потребуется повторно войти в PulseChat</p>
               </div>
             </div>
 
@@ -728,7 +759,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               <button
                 type="button"
                 onClick={() => setIsLogoutModalOpen(false)}
-                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium rounded-xl transition-colors cursor-pointer"
+                className="px-4 py-2 bg-[var(--bg-surface-hover,rgba(255,255,255,0.08))] hover:bg-[var(--bg-input,#0b101e)] border border-[var(--border-subtle,rgba(255,255,255,0.08))] text-[var(--text-secondary,#cbd5e1)] text-xs font-medium rounded-xl transition-colors cursor-pointer"
               >
                 Отмена
               </button>
@@ -738,7 +769,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   setIsLogoutModalOpen(false);
                   logout();
                 }}
-                className="px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white text-xs font-medium rounded-xl transition-colors cursor-pointer shadow-lg shadow-rose-600/30"
+                className="px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold rounded-xl transition-colors cursor-pointer shadow-lg shadow-rose-600/30"
               >
                 Выйти
               </button>

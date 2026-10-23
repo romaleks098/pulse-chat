@@ -742,6 +742,18 @@ conversationsRouter.delete('/:id', requireAuth, async (req: AuthenticatedRequest
   const convId = req.params.id;
 
   try {
+    const conv = await db.get<any>(`
+      SELECT id, is_saved FROM conversations WHERE id = ?
+    `, convId);
+
+    if (!conv) {
+      return res.status(404).json({ error: 'Conversation not found' });
+    }
+
+    if (Boolean(conv.is_saved)) {
+      return res.status(400).json({ error: 'Cannot delete Saved Messages conversation' });
+    }
+
     const isMember = await db.get<any>(`
       SELECT 1 FROM conversation_members WHERE conversation_id = ? AND user_id = ?
     `, convId, currentUserId);

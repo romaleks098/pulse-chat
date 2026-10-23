@@ -10,6 +10,7 @@ import { VoiceRecorder } from './VoiceRecorder';
 import { PinnedMessageBanner } from './PinnedMessageBanner';
 import { RightInfoPanel } from './RightInfoPanel';
 import { FormattedMessageText } from './FormattedMessageText';
+import { ForwardModal } from './ForwardModal';
 import { Avatar } from './ui/Avatar';
 import { ContextMenu, type ContextMenuItem } from './ui/ContextMenu';
 import {
@@ -35,6 +36,7 @@ import {
   MessageCircle,
   PanelRight,
   Copy,
+  Forward,
 } from 'lucide-react';
 
 const POPULAR_EMOJIS = ['👍', '❤️', '🔥', '😂', '😮', '😢', '👏', '🎉'];
@@ -87,6 +89,9 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
     position: null,
     message: null,
   });
+
+  // Forwarding state
+  const [forwardingMsg, setForwardingMsg] = useState<Message | null>(null);
 
   // Search state
   const [showSearch, setShowSearch] = useState(false);
@@ -269,8 +274,35 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
     if (e.key === 'Escape') {
       if (editingMessage) cancelEdit();
       if (replyTo) setReplyTo(null);
+      if (showInfoPanel) setShowInfoPanel(false);
     }
   };
+
+  // Global escape handler for chat (cancels edit/reply, closes right info panel, closes forward modal)
+  useEffect(() => {
+    const handleGlobalEsc = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        if (forwardingMsg) {
+          setForwardingMsg(null);
+          return;
+        }
+        if (showInfoPanel) {
+          setShowInfoPanel(false);
+          return;
+        }
+        if (editingMessage) {
+          cancelEdit();
+          return;
+        }
+        if (replyTo) {
+          setReplyTo(null);
+          return;
+        }
+      }
+    };
+    window.addEventListener('keydown', handleGlobalEsc);
+    return () => window.removeEventListener('keydown', handleGlobalEsc);
+  }, [forwardingMsg, showInfoPanel, editingMessage, replyTo]);
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -365,6 +397,14 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
         },
       },
       {
+        label: 'Переслать',
+        icon: <Forward className="w-4 h-4" />,
+        onClick: () => {
+          setForwardingMsg(msg);
+          closeMsgContextMenu();
+        },
+      },
+      {
         label: 'Скопировать текст',
         icon: <Copy className="w-4 h-4" />,
         onClick: () => {
@@ -408,19 +448,6 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
 
     return items;
   };
-
-  // Determine wallpaper style/class
-  const wallpaperClass =
-    settings.wallpaper.type === 'pattern' && settings.wallpaper.value !== 'none'
-      ? settings.wallpaper.value
-      : '';
-
-  const wallpaperInlineStyle: React.CSSProperties = {};
-  if (settings.wallpaper.type === 'solid') {
-    wallpaperInlineStyle.backgroundColor = settings.wallpaper.value;
-  } else if (settings.wallpaper.type === 'gradient') {
-    wallpaperInlineStyle.background = settings.wallpaper.value;
-  }
 
   return (
     <div className="flex-1 h-full flex overflow-hidden relative">
@@ -588,13 +615,49 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
           onUnpin={() => pinMessage(null)}
         />
 
-        {/* Messages Feed with Wallpaper */}
-        <div
-          ref={messagesContainerRef}
-          onScroll={handleScroll}
-          style={wallpaperInlineStyle}
-          className={`flex-1 overflow-y-auto p-4 space-y-2 ${wallpaperClass}`}
-        >
+        {/* Messages Feed with Layered Wallpaper */}
+        <div className="flex-1 relative overflow-hidden">
+          {/* Base Wallpaper Background */}
+          {settings.wallpaper.type === 'image' ? (
+            <div
+              className="absolute inset-0 bg-cover bg-center transition-all"
+              style={{
+                backgroundImage: `url(${settings.wallpaper.value})`,
+                filter: settings.wallpaper.blur ? `blur(${settings.wallpaper.blur}px)` : undefined,
+                transform: settings.wallpaper.blur ? 'scale(1.08)' : undefined,
+              }}
+            />
+          ) : (
+            <div
+              className="absolute inset-0 transition-all"
+              style={{
+                background: settings.wallpaper.value || 'var(--bg-chat, #090d16)',
+              }}
+            />
+          )}
+
+          {/* Dimming Overlay */}
+          {Boolean(settings.wallpaper.dimming) && (
+            <div
+              className="absolute inset-0 bg-black pointer-events-none transition-opacity"
+              style={{ opacity: (settings.wallpaper.dimming || 0) / 100 }}
+            />
+          )}
+
+          {/* Pattern Overlay */}
+          {settings.wallpaper.pattern && settings.wallpaper.pattern !== 'none' && (
+            <div
+              className={`absolute inset-0 pointer-events-none chat-pattern-${settings.wallpaper.pattern}`}
+              style={{ opacity: settings.wallpaper.opacity ?? 0.15 }}
+            />
+          )}
+
+          {/* Scrollable Messages Feed */}
+          <div
+            ref={messagesContainerRef}
+            onScroll={handleScroll}
+            className="relative z-10 w-full h-full overflow-y-auto p-4 space-y-2 custom-scrollbar"
+          >
           {loadingMessages ? (
             <div className="h-full flex items-center justify-center">
               <div className="w-8 h-8 border-2 border-[var(--accent-default,#6366f1)] border-t-transparent rounded-full animate-spin" />
@@ -767,29 +830,40 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                         </div>
                       )}
 
-                      {/* Text Content with Markdown Formatting */}
+                      {/* Text Content with Markdown Formatting & Telegram anti-overlap timestamp spacer */}
                       {msg.isDeleted ? (
                         <p className="italic opacity-60 text-xs">Сообщение удалено</p>
                       ) : (
                         msg.type === 'text' && (
-                          <div className="text-[13px] leading-relaxed select-text">
+                          <div className="text-[13px] leading-relaxed select-text flow-root">
                             <FormattedMessageText text={msg.text} isOutgoing={isMe} />
+                            {/* Invisible spacer so the last line wraps and leaves space for the floated time badge */}
+                            <span className="inline-block w-14 h-3.5 select-none pointer-events-none" aria-hidden="true" />
+                            <span
+                              className={`float-right -mb-1 ml-2 mt-1 inline-flex items-center gap-1 text-[10px] select-none leading-none ${
+                                isMe ? 'text-white/80' : 'text-[var(--text-muted,#64748b)]'
+                              }`}
+                            >
+                              {msg.updatedAt !== msg.createdAt && <span className="opacity-75">изм.</span>}
+                              <span>{formatMessageTime(msg.createdAt)}</span>
+                              {isMe && <CheckCheck className="w-3.5 h-3.5 text-white/90" />}
+                            </span>
                           </div>
                         )
                       )}
 
-                      {/* Timestamp & Read Status inside bubble */}
-                      <div
-                        className={`flex items-center justify-end gap-1 mt-1 text-[10px] select-none ${
-                          isMe ? 'text-white/80' : 'text-[var(--text-muted,#64748b)]'
-                        }`}
-                      >
-                        {msg.updatedAt !== msg.createdAt && <span className="opacity-75">изм.</span>}
-                        <span>{formatMessageTime(msg.createdAt)}</span>
-                        {isMe && (
-                          <CheckCheck className="w-3.5 h-3.5 text-white/90" />
-                        )}
-                      </div>
+                      {/* Timestamp & Read Status for non-text attachments */}
+                      {(msg.type !== 'text' || msg.isDeleted) && (
+                        <div
+                          className={`flex items-center justify-end gap-1 mt-1 text-[10px] select-none ${
+                            isMe ? 'text-white/80' : 'text-[var(--text-muted,#64748b)]'
+                          }`}
+                        >
+                          {msg.updatedAt !== msg.createdAt && <span className="opacity-75">изм.</span>}
+                          <span>{formatMessageTime(msg.createdAt)}</span>
+                          {isMe && <CheckCheck className="w-3.5 h-3.5 text-white/90" />}
+                        </div>
+                      )}
 
                       {/* Reactions List */}
                       {msg.reactions && msg.reactions.length > 0 && (
@@ -953,6 +1027,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
 
           <div ref={messagesEndRef} />
         </div>
+      </div>
 
         {/* Input / Composer Area */}
         <footer className="p-3 bg-[var(--bg-chat,#090d16)]/95 border-t border-[var(--border-subtle,rgba(255,255,255,0.08))] shrink-0 backdrop-blur-md">
@@ -1133,6 +1208,13 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
         isOpen={showInfoPanel}
         onClose={() => setShowInfoPanel(false)}
         onImageClick={onImageClick}
+      />
+
+      {/* Forward Message Modal */}
+      <ForwardModal
+        isOpen={Boolean(forwardingMsg)}
+        message={forwardingMsg}
+        onClose={() => setForwardingMsg(null)}
       />
     </div>
   );

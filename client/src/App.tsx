@@ -38,6 +38,48 @@ const MainLayout: React.FC = () => {
     return () => window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
   }, []);
 
+  // Global hotkeys: Ctrl+K / Cmd+K for search, Escape for closing modals
+  useEffect(() => {
+    const handleGlobalKeyDown = (e: KeyboardEvent) => {
+      // Ctrl+K or Cmd+K: Focus global search
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'K')) {
+        e.preventDefault();
+        const searchInput = document.querySelector<HTMLInputElement>('input[data-search="global"]');
+        if (searchInput) {
+          searchInput.focus();
+          searchInput.select();
+        }
+      }
+
+      // Escape: Close topmost open modal or image
+      if (e.key === 'Escape') {
+        if (activeImage) {
+          setActiveImage(null);
+          return;
+        }
+        if (isSettingsOpen) {
+          setIsSettingsOpen(false);
+          return;
+        }
+        if (isProfileOpen) {
+          setIsProfileOpen(false);
+          return;
+        }
+        if (isPhoneConnectOpen) {
+          setIsPhoneConnectOpen(false);
+          return;
+        }
+        if (isNewChatOpen) {
+          setIsNewChatOpen(false);
+          return;
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleGlobalKeyDown);
+    return () => window.removeEventListener('keydown', handleGlobalKeyDown);
+  }, [activeImage, isSettingsOpen, isProfileOpen, isPhoneConnectOpen, isNewChatOpen]);
+
   const handleInstallPWA = async () => {
     if (!deferredPrompt) return;
     deferredPrompt.prompt();

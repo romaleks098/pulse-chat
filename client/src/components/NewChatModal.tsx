@@ -172,14 +172,14 @@ export const NewChatModal: React.FC<NewChatModalProps> = ({ isOpen, onClose }) =
     >
       <div className="space-y-4">
         {/* Tab switcher */}
-        <div className="flex p-1 bg-black/20 rounded-xl border border-white/5">
+        <div className="flex p-1 bg-[var(--bg-input,#080c14)] rounded-xl border border-[var(--border-subtle,rgba(255,255,255,0.08))]">
           <button
             type="button"
             onClick={() => { setTab('direct'); setError(null); }}
             className={`flex-1 py-1.5 text-xs font-semibold rounded-lg transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
               tab === 'direct'
                 ? 'bg-[var(--accent-default,#6366f1)] text-white shadow-sm'
-                : 'text-[var(--text-secondary,#94a3b8)] hover:text-white'
+                : 'text-[var(--text-secondary,#94a3b8)] hover:text-[var(--text-primary,#f8fafc)]'
             }`}
           >
             <UserIcon className="w-3.5 h-3.5" />
@@ -192,7 +192,7 @@ export const NewChatModal: React.FC<NewChatModalProps> = ({ isOpen, onClose }) =
             className={`flex-1 py-1.5 text-xs font-semibold rounded-lg transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
               tab === 'group'
                 ? 'bg-[var(--accent-default,#6366f1)] text-white shadow-sm'
-                : 'text-[var(--text-secondary,#94a3b8)] hover:text-white'
+                : 'text-[var(--text-secondary,#94a3b8)] hover:text-[var(--text-primary,#f8fafc)]'
             }`}
           >
             <Users className="w-3.5 h-3.5" />
@@ -205,7 +205,7 @@ export const NewChatModal: React.FC<NewChatModalProps> = ({ isOpen, onClose }) =
             className={`flex-1 py-1.5 text-xs font-semibold rounded-lg transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
               tab === 'channel'
                 ? 'bg-[var(--accent-default,#6366f1)] text-white shadow-sm'
-                : 'text-[var(--text-secondary,#94a3b8)] hover:text-white'
+                : 'text-[var(--text-secondary,#94a3b8)] hover:text-[var(--text-primary,#f8fafc)]'
             }`}
           >
             <Radio className="w-3.5 h-3.5" />
@@ -245,7 +245,7 @@ export const NewChatModal: React.FC<NewChatModalProps> = ({ isOpen, onClose }) =
                   <div
                     key={user.id}
                     onClick={() => handleStartDirect(user)}
-                    className="p-2 rounded-xl flex items-center gap-3 hover:bg-white/5 cursor-pointer transition-colors"
+                    className="p-2 rounded-xl flex items-center gap-3 hover:bg-[var(--bg-surface-hover,rgba(255,255,255,0.05))] cursor-pointer transition-colors"
                   >
                     <Avatar
                       src={user.avatarUrl}
@@ -276,7 +276,7 @@ export const NewChatModal: React.FC<NewChatModalProps> = ({ isOpen, onClose }) =
                       <div
                         key={user.id}
                         onClick={() => handleStartDirect(user)}
-                        className="p-2 rounded-xl flex items-center gap-3 hover:bg-white/5 cursor-pointer transition-colors"
+                        className="p-2 rounded-xl flex items-center gap-3 hover:bg-[var(--bg-surface-hover,rgba(255,255,255,0.05))] cursor-pointer transition-colors"
                       >
                         <Avatar src={user.avatarUrl} name={user.displayName} size="sm" />
                         <div className="min-w-0 flex-1">
@@ -309,7 +309,7 @@ export const NewChatModal: React.FC<NewChatModalProps> = ({ isOpen, onClose }) =
               <label className="block text-xs font-semibold uppercase tracking-wider text-[var(--text-secondary,#94a3b8)] mb-1.5">
                 Аватар группы
               </label>
-              <div className="flex items-center gap-2 overflow-x-auto p-1.5 bg-black/20 rounded-xl border border-white/5">
+              <div className="flex items-center gap-2 overflow-x-auto p-1.5 bg-[var(--bg-input,#080c14)] rounded-xl border border-[var(--border-subtle,rgba(255,255,255,0.08))]">
                 {GROUP_AVATAR_PRESETS.map((preset, idx) => (
                   <button
                     key={idx}
@@ -404,7 +404,9 @@ export const NewChatModal: React.FC<NewChatModalProps> = ({ isOpen, onClose }) =
                       key={user.id}
                       onClick={() => handleToggleUserSelection(user)}
                       className={`p-2 rounded-xl flex items-center justify-between gap-2.5 cursor-pointer transition-colors ${
-                        isSelected ? 'bg-[var(--accent-subtle,rgba(99,102,241,0.15))]' : 'hover:bg-white/5'
+                        isSelected
+                          ? 'bg-[var(--accent-subtle,rgba(99,102,241,0.15))]'
+                          : 'hover:bg-[var(--bg-surface-hover,rgba(255,255,255,0.05))]'
                       }`}
                     >
                       <div className="flex items-center gap-2.5 min-w-0">
