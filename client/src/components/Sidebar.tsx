@@ -530,7 +530,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                               <Mic className="w-3.5 h-3.5" /> Голосовое
                             </span>
                           ) : (
-                            <span>{conv.lastMessage.text}</span>
+                            <span>{conv.lastMessage.text || 'Сообщение'}</span>
                           )}
                         </>
                       ) : (

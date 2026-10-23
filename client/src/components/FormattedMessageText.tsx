@@ -32,7 +32,8 @@ export const FormattedMessageText: React.FC<FormattedMessageTextProps> = ({
   className = '',
   isOutgoing = false,
 }) => {
-  if (!text) return null;
+  const safeText = typeof text === 'string' ? text : '';
+  if (!safeText) return null;
 
   // Regex breakdown:
   // 1. Code blocks: ```(?:([a-zA-Z0-9_-]+)\n)?([\s\S]*?)```
@@ -45,7 +46,7 @@ export const FormattedMessageText: React.FC<FormattedMessageTextProps> = ({
 
   const tokenRegex = /(```[\s\S]*?```|`[^`\n]+`|\|\|[\s\S]+?\|\||\*\*[^*]+\*\*|\*[^*]+\*|~~[^~]+~~|https?:\/\/[^\s<]+|t\.me\/[^\s<]+)/g;
 
-  const parts = text.split(tokenRegex);
+  const parts = safeText.split(tokenRegex);
 
   return (
     <span className={`whitespace-pre-wrap break-words leading-relaxed select-text ${className}`}>

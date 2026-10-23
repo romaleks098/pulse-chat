@@ -4,7 +4,7 @@ import { Play, Pause } from 'lucide-react';
 const activeAudioEmitter = new EventTarget();
 
 interface VoiceMessagePlayerProps {
-  audioUrl: string;
+  audioUrl?: string | null;
   duration?: number;
   isOwn?: boolean;
 }
@@ -17,6 +17,8 @@ export const VoiceMessagePlayer: React.FC<VoiceMessagePlayerProps> = ({ audioUrl
   const [playbackRate, setPlaybackRate] = useState<1 | 1.5 | 2>(1);
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
+  const safeUrl = typeof audioUrl === 'string' ? audioUrl : '';
+
   useEffect(() => {
     if (duration && duration > 0) {
       setTotalDuration(duration);
@@ -24,7 +26,9 @@ export const VoiceMessagePlayer: React.FC<VoiceMessagePlayerProps> = ({ audioUrl
   }, [duration]);
 
   useEffect(() => {
-    const audio = new Audio(audioUrl);
+    if (!safeUrl) return;
+
+    const audio = new Audio(safeUrl);
     audioRef.current = audio;
 
     const onMeta = () => {
@@ -62,7 +66,7 @@ export const VoiceMessagePlayer: React.FC<VoiceMessagePlayerProps> = ({ audioUrl
       activeAudioEmitter.removeEventListener('voice:play', onOtherPlay);
       audioRef.current = null;
     };
-  }, [audioUrl, playerId]);
+  }, [safeUrl, playerId]);
 
   const togglePlay = () => {
     if (!audioRef.current) return;
@@ -104,12 +108,20 @@ export const VoiceMessagePlayer: React.FC<VoiceMessagePlayerProps> = ({ audioUrl
   // Generate 28 pseudo waveform bars based on audioUrl hash
   const bars = React.useMemo(() => {
     let hash = 0;
-    for (let i = 0; i < audioUrl.length; i++) hash = (hash << 5) - hash + audioUrl.charCodeAt(i);
+    for (let i = 0; i < safeUrl.length; i++) hash = (hash << 5) - hash + safeUrl.charCodeAt(i);
     return Array.from({ length: 26 }).map((_, idx) => {
       const val = Math.abs(Math.sin((idx + 1) * 1.35 + hash) * 0.72) + 0.28;
       return Math.round(val * 24);
     });
-  }, [audioUrl]);
+  }, [safeUrl]);
+
+  if (!safeUrl) {
+    return (
+      <div className="text-xs opacity-60 italic py-1 px-2">
+        Аудиозапись недоступна
+      </div>
+    );
+  }
 
   return (
     <div className={`flex items-center gap-3 py-1.5 px-2 rounded-2xl min-w-[230px] max-w-[290px] sm:max-w-[330px] select-none ${

@@ -73,6 +73,28 @@ const DEFAULT_SETTINGS: ThemeSettings = {
 
 const THEME_STORAGE_KEY = 'pulse_theme_v2';
 
+function sanitizeSettings(raw: any): ThemeSettings {
+  if (!raw || typeof raw !== 'object') return DEFAULT_SETTINGS;
+  const rawWallpaper = typeof raw.wallpaper === 'object' && raw.wallpaper !== null ? raw.wallpaper : {};
+  return {
+    ...DEFAULT_SETTINGS,
+    ...raw,
+    bubbleRadius: Math.max(4, Math.min(20, Number(raw.bubbleRadius ?? DEFAULT_SETTINGS.bubbleRadius))),
+    fontSize: Math.max(13, Math.min(20, Number(raw.fontSize ?? DEFAULT_SETTINGS.fontSize))),
+    sidebarWidth: Math.max(260, Math.min(500, Number(raw.sidebarWidth ?? DEFAULT_SETTINGS.sidebarWidth))),
+    wallpaper: {
+      ...DEFAULT_SETTINGS.wallpaper,
+      ...rawWallpaper,
+      type: rawWallpaper.type || DEFAULT_SETTINGS.wallpaper.type,
+      value: typeof rawWallpaper.value === 'string' && rawWallpaper.value.trim() ? rawWallpaper.value : DEFAULT_SETTINGS.wallpaper.value,
+      pattern: rawWallpaper.pattern || DEFAULT_SETTINGS.wallpaper.pattern,
+      blur: typeof rawWallpaper.blur === 'number' ? rawWallpaper.blur : DEFAULT_SETTINGS.wallpaper.blur,
+      dimming: typeof rawWallpaper.dimming === 'number' ? rawWallpaper.dimming : DEFAULT_SETTINGS.wallpaper.dimming,
+      opacity: typeof rawWallpaper.opacity === 'number' ? rawWallpaper.opacity : DEFAULT_SETTINGS.wallpaper.opacity,
+    },
+  };
+}
+
 const PRESET_DEFINITIONS: Record<Exclude<ThemePreset, 'system'>, Record<string, string>> = {
   'classic-dark': {
     '--bg-app': '#090d16',
@@ -257,7 +279,7 @@ export const ThemeProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     try {
       const stored = localStorage.getItem(THEME_STORAGE_KEY);
       if (stored) {
-        return { ...DEFAULT_SETTINGS, ...JSON.parse(stored) };
+        return sanitizeSettings(JSON.parse(stored));
       }
     } catch {}
     return DEFAULT_SETTINGS;
@@ -436,13 +458,7 @@ export const ThemeProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     try {
       const parsed = JSON.parse(jsonStr);
       if (typeof parsed === 'object' && parsed !== null) {
-        setSettings((prev) => ({
-          ...prev,
-          ...parsed,
-          bubbleRadius: Math.max(4, Math.min(20, Number(parsed.bubbleRadius ?? prev.bubbleRadius))),
-          fontSize: Math.max(13, Math.min(20, Number(parsed.fontSize ?? prev.fontSize))),
-          sidebarWidth: Math.max(260, Math.min(500, Number(parsed.sidebarWidth ?? prev.sidebarWidth))),
-        }));
+        setSettings(sanitizeSettings(parsed));
         return true;
       }
     } catch {}

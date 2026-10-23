@@ -12,6 +12,7 @@ import { ProfileModal } from './components/ProfileModal';
 import { ImageViewerModal } from './components/ImageViewerModal';
 import { CallModal } from './components/CallModal';
 import { SettingsModal } from './components/SettingsModal';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import { Download } from 'lucide-react';
 
 const MainLayout: React.FC = () => {
@@ -167,11 +168,13 @@ const MainLayout: React.FC = () => {
             !activeConversationId ? 'hidden md:flex' : 'flex w-full'
           }`}
         >
-          <ChatArea
-            onBack={() => selectConversation(null)}
-            onOpenPhoneConnect={() => setIsPhoneConnectOpen(true)}
-            onImageClick={(url, fileName) => setActiveImage({ url, fileName })}
-          />
+          <ErrorBoundary name="Область переписки (ChatArea)">
+            <ChatArea
+              onBack={() => selectConversation(null)}
+              onOpenPhoneConnect={() => setIsPhoneConnectOpen(true)}
+              onImageClick={(url, fileName) => setActiveImage({ url, fileName })}
+            />
+          </ErrorBoundary>
         </div>
       </div>
 
@@ -210,14 +213,16 @@ const MainLayout: React.FC = () => {
 
 export default function App() {
   return (
-    <ThemeProvider>
-      <ToastProvider>
-        <ChatProvider>
-          <CallProvider>
-            <MainLayout />
-          </CallProvider>
-        </ChatProvider>
-      </ToastProvider>
-    </ThemeProvider>
+    <ErrorBoundary name="Корневой интерфейс (App)">
+      <ThemeProvider>
+        <ToastProvider>
+          <ChatProvider>
+            <CallProvider>
+              <MainLayout />
+            </CallProvider>
+          </ChatProvider>
+        </ToastProvider>
+      </ThemeProvider>
+    </ErrorBoundary>
   );
 }

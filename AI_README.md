@@ -13,6 +13,7 @@
 2. [Архитектура проекта и технологический стек](#2-архитектура-проекта-и-технологический-стек)
 3. [Команды разработки, тестирования и сборки](#3-команды-разработки-тестирования-и-сборки)
 4. [Журнал всех обновлений и изменений](#4-журнал-всех-обновлений-и-изменений)
+   - [Версия 1.8.1 — Hotfix: Устранение падения в чёрный экран после входа (Rules of Hooks & ErrorBoundary)](#версия-181)
    - [Версия 1.8.0 — Этапы 5, 6, 7: Live Preview оформления, Drawer, Login, Пересылка, Спойлеры и Хоткеи](#версия-180)
    - [Версия 1.7.0 — Telegram UI/UX: Сайдбар, Пузыри, Черновики, Правая панель](#версия-170)
    - [Версия 1.6.0 — Дизайн-токены, Темизация и 8 UI-примитивов](#версия-160)
@@ -81,6 +82,48 @@ git push origin main:master
 ---
 
 ## 4. Журнал всех обновлений и изменений
+
+### Версия 1.8.1
+**Дата:** 2026-10-24  
+**Категория:** Hotfix / Стабильность / React Rules of Hooks / ErrorBoundary  
+**Суть обновления:**  
+Срочное устранение критического сбоя продакшена (чёрный экран через 1 секунду после авторизации после деплоя коммита 559a283):
+
+1. **Корневая причина №1 (Нарушение Rules of Hooks в `ChatArea.tsx`):**
+   - **Где падало:** `client/src/components/ChatArea.tsx` (в коммите 559a283 хук `useEffect` для глобального Escape-хэндлера находился на строке **282**, НИЖЕ условного выхода `if (!activeConversation) return (...)` на строке **174**).
+   - **Механизм краша:** Сразу после входа в приложение `activeConversation` равен `null` (идёт фоновая загрузка списка чатов с `/api/conversations`). `ChatArea` отрабатывал ранний `return` со строками 174–185, вызывая только первые 15 хуков. Ровно через ~1 секунду с сервера возвращался список чатов, `activeConversation` становился непустым, и React шёл рендерить компонент дальше, натыкаясь на 16-й хук `useEffect` на строке 282. React выбрасывал фатальную ошибку: `Uncaught Error: Rendered more hooks than during the previous render`, немедленно размонтируя всё дерево компонентов в пустой чёрный экран.
+   - **Исправление:** Все хуки (`useEffect`, `useState`, `useRef`) перенесены на самый верх компонента `ChatArea.tsx` (строки 73–199) строго ДО любого условного или раннего `return`.
+
+2. **Корневая причина №2 (Падение `FormattedMessageText` на голосовых и медиа-сообщениях):**
+   - **Где падало:** `client/src/components/FormattedMessageText.tsx` вызывал `.split(tokenRegex)` напрямую у пропса `text`.
+   - **Механизм краша:** В чате с голосовыми сообщениями (`type: 'voice'`) поле `text` / `content` равно `null` или `undefined`. При открытии такого чата через 1 секунду после авторизации React вызывал `FormattedMessageText`, происходил `TypeError: Cannot read properties of undefined (reading 'split')`, гасивший всё приложение.
+   - **Исправление:** Добавлена строгая защита: `const safeText = typeof text === 'string' ? text : ''; if (!safeText) return null;`. В `ChatArea.tsx` компонент `FormattedMessageText` вызывается только при наличии непустого текстового содержимого.
+
+3. **Защитные меры в `VoiceMessagePlayer.tsx` и `ThemeContext.tsx`:**
+   - В `VoiceMessagePlayer.tsx`: добавлен безопасный фолбэк для `audioUrl` (`typeof audioUrl === 'string' ? audioUrl : ''`), защита в генерации волн (`safeUrl.charCodeAt`) и предотвращение создания объекта `new Audio` при отсутствии ссылки.
+   - В `ThemeContext.tsx`: добавлена функция глубокой валидации и очистки `sanitizeSettings()`, защищающая от битых или неполных объектов обоев (`settings.wallpaper`) из старых версий `localStorage` (`pulse_theme_v2`).
+   - В `ChatArea.tsx`: добавлена проверка `Array.isArray(msg.reactions)` перед вызовом `.reduce()`.
+
+4. **React `ErrorBoundary` на уровне приложения и чата:**
+   - Создан класс-компонент `client/src/components/ErrorBoundary.tsx` с выводом имени компонента, текста ошибки (`error.name` и `error.message`), а также кнопками «Перезагрузить» и «Сбросить кэш и перезагрузить» (очищает `localStorage` и `sessionStorage`).
+   - Корневое приложение в `client/src/App.tsx` обёрнуто в `<ErrorBoundary name="Корневой интерфейс (App)">`.
+   - Область переписки обёрнута в отдельный `<ErrorBoundary name="Область переписки (ChatArea)">`, гарантируя, что любая непредвиденная ошибка в переписке изолируется в блоке чата и не затрагивает сайдбар.
+
+5. **Тестирование:**
+   - Создан скрипт проверки `scripts/test_hotfix_blackscreen.js` (проверяет Rules of Hooks в AST/исходниках, безопасность `FormattedMessageText`, санитизацию тем и работу `ErrorBoundary`).
+   - Все тесты пройдены: 6/6 в `test_hotfix_blackscreen.js`, 100% в `test:stages`. Пройдена компиляция TypeScript и Vite (`npm run build`).
+
+**Затронутые файлы:**
+- `client/src/components/ChatArea.tsx` — перенос хука `useEffect` наверх, защита `reactions` и `replyTo`.
+- `client/src/components/FormattedMessageText.tsx` — безопасная обработка null/undefined/non-string `text`.
+- `client/src/components/VoiceMessagePlayer.tsx` — защита от null/undefined `audioUrl`.
+- `client/src/components/ErrorBoundary.tsx` — новый компонент предохранителя ошибок с красивым UI.
+- `client/src/App.tsx` — обёртка корневого приложения и ChatArea в ErrorBoundary.
+- `client/src/context/ThemeContext.tsx` — функция санитизации тем `sanitizeSettings`.
+- `scripts/test_hotfix_blackscreen.js` — автоматизированные тесты хотфикса.
+- `CHANGELOG.md` & `AI_README.md` — фиксация изменений и архитектурного анализа.
+
+---
 
 ### Версия 1.8.0
 **Дата:** 2026-10-24  

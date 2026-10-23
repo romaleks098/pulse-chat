@@ -171,6 +171,33 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
     scrollToBottom('smooth');
   }, [messages.length]);
 
+  // Global escape handler for chat (cancels edit/reply, closes right info panel, closes forward modal)
+  useEffect(() => {
+    const handleGlobalEsc = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        if (forwardingMsg) {
+          setForwardingMsg(null);
+          return;
+        }
+        if (showInfoPanel) {
+          setShowInfoPanel(false);
+          return;
+        }
+        if (editingMessage) {
+          setEditingMessage(null);
+          setInputText('');
+          return;
+        }
+        if (replyTo) {
+          setReplyTo(null);
+          return;
+        }
+      }
+    };
+    window.addEventListener('keydown', handleGlobalEsc);
+    return () => window.removeEventListener('keydown', handleGlobalEsc);
+  }, [forwardingMsg, showInfoPanel, editingMessage, replyTo]);
+
   if (!activeConversation) {
     return (
       <div className="flex-1 h-full bg-[var(--bg-chat,#090d16)] flex flex-col items-center justify-center p-6 text-center text-[var(--text-secondary,#94a3b8)]">
@@ -277,32 +304,6 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
       if (showInfoPanel) setShowInfoPanel(false);
     }
   };
-
-  // Global escape handler for chat (cancels edit/reply, closes right info panel, closes forward modal)
-  useEffect(() => {
-    const handleGlobalEsc = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        if (forwardingMsg) {
-          setForwardingMsg(null);
-          return;
-        }
-        if (showInfoPanel) {
-          setShowInfoPanel(false);
-          return;
-        }
-        if (editingMessage) {
-          cancelEdit();
-          return;
-        }
-        if (replyTo) {
-          setReplyTo(null);
-          return;
-        }
-      }
-    };
-    window.addEventListener('keydown', handleGlobalEsc);
-    return () => window.removeEventListener('keydown', handleGlobalEsc);
-  }, [forwardingMsg, showInfoPanel, editingMessage, replyTo]);
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -773,10 +774,10 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                           }`}
                         >
                           <div className="font-semibold text-[11px] text-[var(--accent-default,#a5b4fc)]">
-                            {msg.replyTo.senderName}
+                            {msg.replyTo.senderName || 'Пользователь'}
                           </div>
                           <div className="truncate text-[11px] opacity-80">
-                            {msg.replyTo.text}
+                            {msg.replyTo.text || 'Вложение'}
                           </div>
                         </div>
                       )}
@@ -866,7 +867,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                       )}
 
                       {/* Reactions List */}
-                      {msg.reactions && msg.reactions.length > 0 && (
+                      {Array.isArray(msg.reactions) && msg.reactions.length > 0 && (
                         <div className="flex flex-wrap gap-1 mt-2 pt-1 border-t border-white/10">
                           {Object.entries(
                             msg.reactions.reduce((acc, r) => {
