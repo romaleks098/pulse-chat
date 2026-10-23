@@ -4,7 +4,7 @@ import { requireAuth, AuthenticatedRequest } from '../auth.js';
 
 export const usersRouter = Router();
 
-usersRouter.get('/search', requireAuth, (req: AuthenticatedRequest, res) => {
+usersRouter.get('/search', requireAuth, async (req: AuthenticatedRequest, res) => {
   const q = req.query.q as string;
   if (!q || q.trim() === '') {
     return res.json([]);
@@ -14,13 +14,13 @@ usersRouter.get('/search', requireAuth, (req: AuthenticatedRequest, res) => {
   const currentUserId = req.user!.userId;
 
   try {
-    const users = db.prepare(`
+    const users = await db.all(`
       SELECT id, username, display_name, avatar_url, status_text, last_seen
       FROM users
       WHERE (username LIKE ? OR display_name LIKE ?)
         AND id != ?
       LIMIT 20
-    `).all(query, query, currentUserId);
+    `, query, query, currentUserId);
 
     res.json(users);
   } catch (err) {
@@ -29,13 +29,13 @@ usersRouter.get('/search', requireAuth, (req: AuthenticatedRequest, res) => {
   }
 });
 
-usersRouter.get('/:id', requireAuth, (req, res) => {
+usersRouter.get('/:id', requireAuth, async (req, res) => {
   try {
-    const user = db.prepare(`
+    const user = await db.get(`
       SELECT id, username, display_name, avatar_url, status_text, last_seen
       FROM users
       WHERE id = ?
-    `).get(req.params.id);
+    `, req.params.id);
 
     if (!user) {
       return res.status(404).json({ error: 'User not found' });

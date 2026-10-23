@@ -7,15 +7,16 @@ interface AuthenticatedSocket extends Socket {
   user?: TokenPayload;
 }
 
-// Maps userId to set of active socketIds
+// Track online users by userId -> Set of socketIds (multiple tabs/devices)
 const onlineUsers = new Map<string, Set<string>>();
+
 let ioInstance: Server | null = null;
 
-export function getIO(): Server | null {
-  return ioInstance;
-}
-
-export function broadcastToConversationMembers(
+/**
+ * Broadcast an event to all connected devices of every participant in the conversation,
+ * as well as into the conversation room.
+ */
+export async function broadcastToConversationMembers(
   conversationId: string,
   event: string,
   data: any,
@@ -26,12 +27,15 @@ export function broadcastToConversationMembers(
 
   let seq = 0;
   if (recordEvent) {
-    seq = recordSyncEvent(event, conversationId, data, targetUserId);
+    seq = await recordSyncEvent(event, conversationId, data, targetUserId);
   }
   const payload = seq ? { ...data, seq } : data;
 
   try {
-    const members = db.prepare(`SELECT user_id FROM conversation_members WHERE conversation_id = ?`).all(conversationId) as { user_id: string }[];
+    const members = await db.all<{ user_id: string }>(
+      'SELECT user_id FROM conversation_members WHERE conversation_id = ?',
+      conversationId
+    );
     for (const m of members) {
       ioInstance.to(`user:${m.user_id}`).emit(event, payload);
     }
@@ -44,6 +48,7 @@ export function broadcastToConversationMembers(
 
 export function setupSocketServer(io: Server) {
   ioInstance = io;
+
   // Authentication middleware
   io.use((socket: AuthenticatedSocket, next) => {
     const token = socket.handshake.auth?.token || socket.handshake.headers?.authorization?.replace('Bearer ', '');
@@ -60,7 +65,7 @@ export function setupSocketServer(io: Server) {
     next();
   });
 
-  io.on('connection', (socket: AuthenticatedSocket) => {
+  io.on('connection', async (socket: AuthenticatedSocket) => {
     const user = socket.user!;
     const userId = user.userId;
 
@@ -75,9 +80,10 @@ export function setupSocketServer(io: Server) {
 
     // Auto-join all conversation rooms this user belongs to
     try {
-      const convs = db.prepare(`
-        SELECT conversation_id FROM conversation_members WHERE user_id = ?
-      `).all(userId) as { conversation_id: string }[];
+      const convs = await db.all<{ conversation_id: string }>(
+        'SELECT conversation_id FROM conversation_members WHERE user_id = ?',
+        userId
+      );
 
       for (const c of convs) {
         socket.join(`conv_${c.conversation_id}`);
@@ -116,7 +122,7 @@ export function setupSocketServer(io: Server) {
       });
     });
 
-    // Handle sending a message
+    // Handle sending message
     socket.on('message:send', async (data: {
       conversationId: string;
       text: string;
@@ -132,9 +138,11 @@ export function setupSocketServer(io: Server) {
 
       try {
         // Verify user is in conversation
-        const isMember = db.prepare(`
-          SELECT 1 FROM conversation_members WHERE conversation_id = ? AND user_id = ?
-        `).get(conversationId, userId);
+        const isMember = await db.get(
+          'SELECT 1 FROM conversation_members WHERE conversation_id = ? AND user_id = ?',
+          conversationId,
+          userId
+        );
 
         if (!isMember) {
           return socket.emit('error', { message: 'You are not a member of this conversation' });
@@ -144,19 +152,17 @@ export function setupSocketServer(io: Server) {
         const now = new Date().toISOString();
 
         // Get sender details
-        const sender = db.prepare(`
-          SELECT username, display_name, avatar_url FROM users WHERE id = ?
-        `).get(userId) as any;
+        const sender = await db.get<any>('SELECT username, display_name, avatar_url FROM users WHERE id = ?', userId);
 
         // Get reply details if any
         let replyTo = null;
         if (replyToId) {
-          const rawReply = db.prepare(`
+          const rawReply = await db.get<any>(`
             SELECT m.id, m.text, m.type, m.file_name, m.voice_duration, u.display_name as sender_name
             FROM messages m
             JOIN users u ON u.id = m.sender_id
             WHERE m.id = ?
-          `).get(replyToId) as any;
+          `, replyToId);
 
           if (rawReply) {
             replyTo = {
@@ -175,10 +181,10 @@ export function setupSocketServer(io: Server) {
           clientMessageId: clientMessageId || null,
           conversationId,
           senderId: userId,
-          senderUsername: sender.username,
-          senderName: sender.display_name,
-          senderAvatar: sender.avatar_url,
-          text,
+          senderUsername: sender?.username || user.username,
+          senderName: sender?.display_name || user.username,
+          senderAvatar: sender?.avatar_url || '',
+          text: text || '',
           type,
           fileUrl,
           fileName,
@@ -193,25 +199,25 @@ export function setupSocketServer(io: Server) {
         };
 
         // Record sync event to get monotonic sequence number (seq)
-        const seq = recordSyncEvent('message:new', conversationId, messageData);
+        const seq = await recordSyncEvent('message:new', conversationId, messageData);
         const fullMessage = { ...messageData, seq };
 
         // Save message & update conversation time
-        const insertMsg = db.transaction(() => {
-          db.prepare(`
+        await db.transaction(async () => {
+          await db.run(`
             INSERT INTO messages (id, conversation_id, sender_id, text, type, file_url, file_name, file_size, voice_duration, reply_to_id, client_message_id, seq, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-          `).run(msgId, conversationId, userId, text || '', type, fileUrl || null, fileName || null, fileSize || null, voiceDuration || null, replyToId || null, clientMessageId || null, seq, now, now);
+          `, msgId, conversationId, userId, text || '', type, fileUrl || null, fileName || null, fileSize || null, voiceDuration || null, replyToId || null, clientMessageId || null, seq, now, now);
 
-          db.prepare(`
-            UPDATE conversations SET updated_at = ? WHERE id = ?
-          `).run(now, conversationId);
+          await db.run(
+            'UPDATE conversations SET updated_at = ? WHERE id = ?',
+            now,
+            conversationId
+          );
         });
 
-        insertMsg();
-
         // Broadcast to all participants' rooms (user:<userId>) and conv room
-        broadcastToConversationMembers(conversationId, 'message:new', fullMessage, false);
+        await broadcastToConversationMembers(conversationId, 'message:new', fullMessage, false);
       } catch (err) {
         console.error('Send message error:', err);
         socket.emit('error', { message: 'Failed to send message' });
@@ -219,18 +225,18 @@ export function setupSocketServer(io: Server) {
     });
 
     // Handle pin message in real-time
-    socket.on('conversation:pin', ({ conversationId, messageId }: { conversationId: string; messageId: string | null }) => {
+    socket.on('conversation:pin', async ({ conversationId, messageId }: { conversationId: string; messageId: string | null }) => {
       try {
-        db.prepare('UPDATE conversations SET pinned_message_id = ? WHERE id = ?').run(messageId || null, conversationId);
-        
+        await db.run('UPDATE conversations SET pinned_message_id = ? WHERE id = ?', messageId || null, conversationId);
+
         let pinnedMessage: any = null;
         if (messageId) {
-          const pm = db.prepare(`
+          const pm = await db.get<any>(`
             SELECT m.id, m.sender_id, m.text, m.type, m.file_name, m.file_url, m.voice_duration, m.created_at, u.display_name as sender_name
             FROM messages m
             JOIN users u ON u.id = m.sender_id
             WHERE m.id = ? AND m.is_deleted = 0
-          `).get(messageId) as any;
+          `, messageId);
 
           if (pm) {
             pinnedMessage = {
@@ -247,7 +253,7 @@ export function setupSocketServer(io: Server) {
           }
         }
 
-        broadcastToConversationMembers(conversationId, 'conversation:pinned', {
+        await broadcastToConversationMembers(conversationId, 'conversation:pinned', {
           conversationId,
           pinnedMessageId: messageId || null,
           pinnedMessage,
@@ -258,29 +264,35 @@ export function setupSocketServer(io: Server) {
     });
 
     // Handle reaction toggle
-    socket.on('message:react', ({ messageId, emoji, conversationId }: { messageId: string; emoji: string; conversationId: string }) => {
+    socket.on('message:react', async ({ messageId, emoji, conversationId }: { messageId: string; emoji: string; conversationId: string }) => {
       try {
-        const existing = db.prepare(`
-          SELECT id FROM reactions WHERE message_id = ? AND user_id = ? AND emoji = ?
-        `).get(messageId, userId, emoji) as any;
+        const existing = await db.get<any>(
+          'SELECT id FROM reactions WHERE message_id = ? AND user_id = ? AND emoji = ?',
+          messageId,
+          userId,
+          emoji
+        );
 
         if (existing) {
-          db.prepare('DELETE FROM reactions WHERE id = ?').run(existing.id);
+          await db.run('DELETE FROM reactions WHERE id = ?', existing.id);
         } else {
           const reactId = crypto.randomUUID();
-          db.prepare(`
-            INSERT INTO reactions (id, message_id, user_id, emoji)
-            VALUES (?, ?, ?, ?)
-          `).run(reactId, messageId, userId, emoji);
+          await db.run(
+            'INSERT INTO reactions (id, message_id, user_id, emoji) VALUES (?, ?, ?, ?)',
+            reactId,
+            messageId,
+            userId,
+            emoji
+          );
         }
 
         // Get updated reactions for this message
-        const reactions = db.prepare(`
+        const reactions = await db.all<any>(`
           SELECT r.id, r.message_id, r.user_id, r.emoji, u.display_name as user_name
           FROM reactions r
           JOIN users u ON u.id = r.user_id
           WHERE r.message_id = ?
-        `).all(messageId) as any[];
+        `, messageId);
 
         const mappedReactions = reactions.map((r) => ({
           userId: r.user_id,
@@ -288,7 +300,7 @@ export function setupSocketServer(io: Server) {
           emoji: r.emoji,
         }));
 
-        broadcastToConversationMembers(conversationId, 'message:reactions_updated', {
+        await broadcastToConversationMembers(conversationId, 'message:reactions_updated', {
           conversationId,
           messageId,
           reactions: mappedReactions,
@@ -299,17 +311,17 @@ export function setupSocketServer(io: Server) {
     });
 
     // Handle edit message
-    socket.on('message:edit', ({ messageId, newText, conversationId }: { messageId: string; newText: string; conversationId: string }) => {
+    socket.on('message:edit', async ({ messageId, newText, conversationId }: { messageId: string; newText: string; conversationId: string }) => {
       try {
-        const msg = db.prepare('SELECT sender_id, is_deleted FROM messages WHERE id = ?').get(messageId) as any;
+        const msg = await db.get<any>('SELECT sender_id, is_deleted FROM messages WHERE id = ?', messageId);
         if (!msg || msg.sender_id !== userId || msg.is_deleted) {
           return socket.emit('error', { message: 'Cannot edit this message' });
         }
 
         const now = new Date().toISOString();
-        db.prepare('UPDATE messages SET text = ?, updated_at = ? WHERE id = ?').run(newText.trim(), now, messageId);
+        await db.run('UPDATE messages SET text = ?, updated_at = ? WHERE id = ?', newText.trim(), now, messageId);
 
-        broadcastToConversationMembers(conversationId, 'message:edited', {
+        await broadcastToConversationMembers(conversationId, 'message:edited', {
           conversationId,
           messageId,
           text: newText.trim(),
@@ -321,17 +333,17 @@ export function setupSocketServer(io: Server) {
     });
 
     // Handle delete message
-    socket.on('message:delete', ({ messageId, conversationId }: { messageId: string; conversationId: string }) => {
+    socket.on('message:delete', async ({ messageId, conversationId }: { messageId: string; conversationId: string }) => {
       try {
-        const msg = db.prepare('SELECT sender_id FROM messages WHERE id = ?').get(messageId) as any;
+        const msg = await db.get<any>('SELECT sender_id FROM messages WHERE id = ?', messageId);
         if (!msg || msg.sender_id !== userId) {
           return socket.emit('error', { message: 'Cannot delete this message' });
         }
 
         const now = new Date().toISOString();
-        db.prepare('UPDATE messages SET is_deleted = 1, text = ?, updated_at = ? WHERE id = ?').run('', now, messageId);
+        await db.run('UPDATE messages SET is_deleted = 1, text = ?, updated_at = ? WHERE id = ?', '', now, messageId);
 
-        broadcastToConversationMembers(conversationId, 'message:deleted', {
+        await broadcastToConversationMembers(conversationId, 'message:deleted', {
           conversationId,
           messageId,
         }, true);
@@ -341,21 +353,25 @@ export function setupSocketServer(io: Server) {
     });
 
     // WebRTC Calling signaling events
-    socket.on('call:start', ({ conversationId, isVideo }: { conversationId: string; isVideo: boolean }) => {
+    socket.on('call:start', async ({ conversationId, isVideo }: { conversationId: string; isVideo: boolean }) => {
       try {
-        const conv = db.prepare('SELECT is_saved, type FROM conversations WHERE id = ?').get(conversationId) as any;
+        const conv = await db.get<any>('SELECT is_saved, type FROM conversations WHERE id = ?', conversationId);
         if (!conv || conv.is_saved === 1) {
           socket.emit('call:error', { message: 'Нельзя позвонить в Избранное' });
           return;
         }
 
-        const otherMembers = db.prepare('SELECT user_id FROM conversation_members WHERE conversation_id = ? AND user_id != ?').all(conversationId, userId) as any[];
+        const otherMembers = await db.all<any>(
+          'SELECT user_id FROM conversation_members WHERE conversation_id = ? AND user_id != ?',
+          conversationId,
+          userId
+        );
         if (otherMembers.length === 0) {
           socket.emit('call:error', { message: 'В чате нет других участников для звонка' });
           return;
         }
 
-        const caller = db.prepare('SELECT display_name, avatar_url FROM users WHERE id = ?').get(userId) as any;
+        const caller = await db.get<any>('SELECT display_name, avatar_url FROM users WHERE id = ?', userId);
         socket.to(`conv_${conversationId}`).emit('call:incoming', {
           conversationId,
           callerId: userId,
@@ -398,14 +414,16 @@ export function setupSocketServer(io: Server) {
     });
 
     // Handle disconnect
-    socket.on('disconnect', () => {
+    socket.on('disconnect', async () => {
       const userSockets = onlineUsers.get(userId);
       if (userSockets) {
         userSockets.delete(socket.id);
         if (userSockets.size === 0) {
           onlineUsers.delete(userId);
           const now = new Date().toISOString();
-          db.prepare('UPDATE users SET last_seen = ? WHERE id = ?').run(now, userId);
+          try {
+            await db.run('UPDATE users SET last_seen = ? WHERE id = ?', now, userId);
+          } catch {}
           io.emit('user:status', { userId, status: 'offline', lastSeen: now });
         }
       }

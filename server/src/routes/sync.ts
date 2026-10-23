@@ -5,17 +5,17 @@ import { requireAuth, AuthenticatedRequest } from '../auth.js';
 export const syncRouter = Router();
 
 // GET /api/sync?since=<seq>&epoch=<epoch>
-syncRouter.get('/', requireAuth, (req: AuthenticatedRequest, res) => {
+syncRouter.get('/', requireAuth, async (req: AuthenticatedRequest, res) => {
   const userId = req.user!.userId;
   const since = Number(req.query.since) || 0;
   const clientEpoch = req.query.epoch ? String(req.query.epoch) : null;
 
   try {
-    const serverEpoch = getServerEpoch();
+    const serverEpoch = await getServerEpoch();
 
     // Query maximum sequence number currently in sync_events
-    const maxRow = db.prepare('SELECT MAX(seq) as max_seq FROM sync_events').get() as any;
-    const latestSeq = maxRow?.max_seq || 0;
+    const maxRow = await db.get<{ max_seq: number }>('SELECT MAX(seq) as max_seq FROM sync_events');
+    const latestSeq = Number(maxRow?.max_seq || 0);
 
     // Full resync condition:
     // 1. Client has different epoch (e.g. server/database restarted or reset)
@@ -31,7 +31,7 @@ syncRouter.get('/', requireAuth, (req: AuthenticatedRequest, res) => {
     }
 
     // Query delta events for this user since last known seq
-    const rawEvents = db.prepare(`
+    const rawEvents = await db.all<any>(`
       SELECT seq, user_id, conversation_id, event_type, payload, created_at
       FROM sync_events
       WHERE seq > ?
@@ -42,7 +42,7 @@ syncRouter.get('/', requireAuth, (req: AuthenticatedRequest, res) => {
         )
       ORDER BY seq ASC
       LIMIT 250
-    `).all(since, userId, userId) as any[];
+    `, since, userId, userId);
 
     const events = rawEvents.map((r) => {
       let data = null;
@@ -52,7 +52,7 @@ syncRouter.get('/', requireAuth, (req: AuthenticatedRequest, res) => {
         data = r.payload;
       }
       return {
-        seq: r.seq,
+        seq: Number(r.seq),
         conversationId: r.conversation_id,
         eventType: r.event_type,
         data,

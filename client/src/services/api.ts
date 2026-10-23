@@ -60,7 +60,16 @@ export const api = {
     const res = await fetch(`${API_BASE}/auth/me`, {
       headers: getAuthHeaders(),
     });
-    if (!res.ok) throw new Error('Не авторизован');
+    if (res.status === 401 || res.status === 403) {
+      const err = new Error('Unauthorized');
+      (err as any).status = 401;
+      throw err;
+    }
+    if (!res.ok) {
+      const err = new Error(`Server status: ${res.status}`);
+      (err as any).status = res.status;
+      throw err;
+    }
     return res.json();
   },
 

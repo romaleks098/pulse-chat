@@ -6,12 +6,12 @@ import { broadcastToConversationMembers } from '../socket.js';
 
 export const conversationsRouter = Router();
 
-// List user conversations
-conversationsRouter.get('/', requireAuth, (req: AuthenticatedRequest, res) => {
+// Get all conversations for current user
+conversationsRouter.get('/', requireAuth, async (req: AuthenticatedRequest, res) => {
   const currentUserId = req.user!.userId;
 
   try {
-    const rows = db.prepare(`
+    const rows = await db.all<any>(`
       SELECT 
         c.id,
         c.type,
@@ -31,26 +31,26 @@ conversationsRouter.get('/', requireAuth, (req: AuthenticatedRequest, res) => {
       JOIN conversation_members cm ON cm.conversation_id = c.id
       WHERE cm.user_id = ?
       ORDER BY cm.is_pinned DESC, c.updated_at DESC
-    `).all(currentUserId) as any[];
+    `, currentUserId);
 
-    const result = rows.map((conv) => {
+    const result = await Promise.all(rows.map(async (conv) => {
       // Get all members for this conversation
-      const members = db.prepare(`
+      const members = await db.all<any>(`
         SELECT u.id, u.username, u.display_name, u.avatar_url, u.status_text, u.last_seen, cm.role
         FROM conversation_members cm
         JOIN users u ON u.id = cm.user_id
         WHERE cm.conversation_id = ?
-      `).all(conv.id) as any[];
+      `, conv.id);
 
       // Get last message
-      const lastMessage = db.prepare(`
+      const lastMessage = await db.get<any>(`
         SELECT m.id, m.sender_id, m.text, m.type, m.file_name, m.voice_duration, m.created_at, m.is_deleted, u.display_name as sender_name
         FROM messages m
         JOIN users u ON u.id = m.sender_id
         WHERE m.conversation_id = ?
         ORDER BY m.created_at DESC
         LIMIT 1
-      `).get(conv.id) as any;
+      `, conv.id);
 
       let chatName = conv.name;
       let chatAvatar = conv.avatar_url;
@@ -71,28 +71,28 @@ conversationsRouter.get('/', requireAuth, (req: AuthenticatedRequest, res) => {
       // Calculate unread count
       let unreadCount = 0;
       if (conv.last_read_at) {
-        const countRes = db.prepare(`
+        const countRes = await db.get<any>(`
           SELECT COUNT(*) as cnt FROM messages 
           WHERE conversation_id = ? AND created_at > ? AND sender_id != ? AND is_deleted = 0
-        `).get(conv.id, conv.last_read_at, currentUserId) as any;
-        unreadCount = countRes?.cnt || 0;
+        `, conv.id, conv.last_read_at, currentUserId);
+        unreadCount = Number(countRes?.cnt || 0);
       } else {
-        const countRes = db.prepare(`
+        const countRes = await db.get<any>(`
           SELECT COUNT(*) as cnt FROM messages 
           WHERE conversation_id = ? AND sender_id != ? AND is_deleted = 0
-        `).get(conv.id, currentUserId) as any;
-        unreadCount = countRes?.cnt || 0;
+        `, conv.id, currentUserId);
+        unreadCount = Number(countRes?.cnt || 0);
       }
 
       // Fetch pinned message if any
       let pinnedMessage: any = null;
       if (conv.pinned_message_id) {
-        const pm = db.prepare(`
+        const pm = await db.get<any>(`
           SELECT m.id, m.sender_id, m.text, m.type, m.file_name, m.file_url, m.voice_duration, m.created_at, u.display_name as sender_name
           FROM messages m
           JOIN users u ON u.id = m.sender_id
           WHERE m.id = ? AND m.is_deleted = 0
-        `).get(conv.pinned_message_id) as any;
+        `, conv.pinned_message_id);
         if (pm) {
           pinnedMessage = {
             id: pm.id,
@@ -132,22 +132,23 @@ conversationsRouter.get('/', requireAuth, (req: AuthenticatedRequest, res) => {
               text: lastMessage.is_deleted ? 'Сообщение удалено' : lastMessage.text,
               type: lastMessage.type,
               fileName: lastMessage.file_name,
+              voiceDuration: lastMessage.voice_duration,
               createdAt: lastMessage.created_at,
             }
           : null,
         updatedAt: conv.updated_at,
       };
-    });
+    }));
 
     res.json(result);
   } catch (err) {
-    console.error('List conversations error:', err);
-    res.status(500).json({ error: 'Failed to list conversations' });
+    console.error('Fetch conversations error:', err);
+    res.status(500).json({ error: 'Failed to fetch conversations' });
   }
 });
 
-// Create or get direct conversation
-conversationsRouter.post('/direct', requireAuth, (req: AuthenticatedRequest, res) => {
+// Create direct conversation
+conversationsRouter.post('/direct', requireAuth, async (req: AuthenticatedRequest, res) => {
   const currentUserId = req.user!.userId;
   const { partnerId } = req.body;
 
@@ -161,14 +162,14 @@ conversationsRouter.post('/direct', requireAuth, (req: AuthenticatedRequest, res
 
   try {
     // Check if direct conversation already exists between these two users
-    const existing = db.prepare(`
+    const existing = await db.get<any>(`
       SELECT c.id
       FROM conversations c
       JOIN conversation_members cm1 ON cm1.conversation_id = c.id AND cm1.user_id = ?
       JOIN conversation_members cm2 ON cm2.conversation_id = c.id AND cm2.user_id = ?
       WHERE c.type = 'direct'
       LIMIT 1
-    `).get(currentUserId, partnerId) as any;
+    `, currentUserId, partnerId);
 
     if (existing) {
       return res.json({ id: existing.id, isNew: false });
@@ -178,19 +179,22 @@ conversationsRouter.post('/direct', requireAuth, (req: AuthenticatedRequest, res
     const convId = crypto.randomUUID();
     const now = new Date().toISOString();
 
-    const insertConv = db.transaction(() => {
-      db.prepare(`
+    await db.transaction(async () => {
+      await db.run(`
         INSERT INTO conversations (id, type, created_by, created_at, updated_at)
         VALUES (?, 'direct', ?, ?, ?)
-      `).run(convId, currentUserId, now, now);
+      `, convId, currentUserId, now, now);
 
-      db.prepare(`
+      await db.run(`
         INSERT INTO conversation_members (conversation_id, user_id, role)
-        VALUES (?, ?, 'member'), (?, ?, 'member')
-      `).run(convId, currentUserId, convId, partnerId);
-    });
+        VALUES (?, ?, 'member')
+      `, convId, currentUserId);
 
-    insertConv();
+      await db.run(`
+        INSERT INTO conversation_members (conversation_id, user_id, role)
+        VALUES (?, ?, 'member')
+      `, convId, partnerId);
+    });
 
     broadcastToConversationMembers(convId, 'conversation:new', {
       id: convId,
@@ -207,7 +211,7 @@ conversationsRouter.post('/direct', requireAuth, (req: AuthenticatedRequest, res
 });
 
 // Create group conversation
-conversationsRouter.post('/group', requireAuth, (req: AuthenticatedRequest, res) => {
+conversationsRouter.post('/group', requireAuth, async (req: AuthenticatedRequest, res) => {
   const currentUserId = req.user!.userId;
   const { name, avatarUrl, memberIds = [] } = req.body;
 
@@ -219,33 +223,28 @@ conversationsRouter.post('/group', requireAuth, (req: AuthenticatedRequest, res)
     const convId = crypto.randomUUID();
     const now = new Date().toISOString();
     const groupAvatar = avatarUrl || `https://api.dicebear.com/7.x/identicon/svg?seed=${encodeURIComponent(name.trim())}`;
-
     const uniqueMembers = Array.from(new Set([currentUserId, ...memberIds]));
 
-    const createGroup = db.transaction(() => {
-      db.prepare(`
+    await db.transaction(async () => {
+      await db.run(`
         INSERT INTO conversations (id, type, name, avatar_url, created_by, created_at, updated_at)
         VALUES (?, 'group', ?, ?, ?, ?, ?)
-      `).run(convId, name.trim(), groupAvatar, currentUserId, now, now);
-
-      const stmt = db.prepare(`
-        INSERT INTO conversation_members (conversation_id, user_id, role)
-        VALUES (?, ?, ?)
-      `);
+      `, convId, name.trim(), groupAvatar, currentUserId, now, now);
 
       for (const mId of uniqueMembers) {
-        stmt.run(convId, mId, mId === currentUserId ? 'owner' : 'member');
+        await db.run(`
+          INSERT INTO conversation_members (conversation_id, user_id, role)
+          VALUES (?, ?, ?)
+        `, convId, mId, mId === currentUserId ? 'owner' : 'member');
       }
 
       // Add system message
       const sysMsgId = crypto.randomUUID();
-      db.prepare(`
+      await db.run(`
         INSERT INTO messages (id, conversation_id, sender_id, text, type, created_at, updated_at)
         VALUES (?, ?, ?, ?, 'text', ?, ?)
-      `).run(sysMsgId, convId, currentUserId, `Группа "${name.trim()}" создана`, now, now);
+      `, sysMsgId, convId, currentUserId, `Группа "${name.trim()}" создана`, now, now);
     });
-
-    createGroup();
 
     broadcastToConversationMembers(convId, 'conversation:new', {
       id: convId,
@@ -263,17 +262,17 @@ conversationsRouter.post('/group', requireAuth, (req: AuthenticatedRequest, res)
 });
 
 // Fetch messages for a conversation
-conversationsRouter.get('/:id/messages', requireAuth, (req: AuthenticatedRequest, res) => {
+conversationsRouter.get('/:id/messages', requireAuth, async (req: AuthenticatedRequest, res) => {
   const currentUserId = req.user!.userId;
   const convId = req.params.id;
   const limit = Math.min(Number(req.query.limit) || 60, 100);
-  const before = req.query.before as string; // timestamp or id
+  const before = req.query.before as string;
 
   try {
     // Check membership
-    const isMember = db.prepare(`
+    const isMember = await db.get<any>(`
       SELECT 1 FROM conversation_members WHERE conversation_id = ? AND user_id = ?
-    `).get(convId, currentUserId);
+    `, convId, currentUserId);
 
     if (!isMember) {
       return res.status(403).json({ error: 'Not a member of this conversation' });
@@ -292,6 +291,8 @@ conversationsRouter.get('/:id/messages', requireAuth, (req: AuthenticatedRequest
         m.voice_duration,
         m.reply_to_id,
         m.is_deleted,
+        m.seq,
+        m.client_message_id,
         m.created_at,
         m.updated_at,
         u.username as sender_username,
@@ -312,7 +313,7 @@ conversationsRouter.get('/:id/messages', requireAuth, (req: AuthenticatedRequest
     query += ` ORDER BY m.created_at DESC LIMIT ?`;
     params.push(limit);
 
-    const rawMessages = db.prepare(query).all(...params) as any[];
+    const rawMessages = await db.all<any>(query, ...params);
 
     // Fetch reactions for these messages
     const messageIds = rawMessages.map((m) => m.id);
@@ -320,12 +321,12 @@ conversationsRouter.get('/:id/messages', requireAuth, (req: AuthenticatedRequest
 
     if (messageIds.length > 0) {
       const placeholders = messageIds.map(() => '?').join(',');
-      const reactions = db.prepare(`
+      const reactions = await db.all<any>(`
         SELECT r.id, r.message_id, r.user_id, r.emoji, u.display_name as user_name
         FROM reactions r
         JOIN users u ON u.id = r.user_id
         WHERE r.message_id IN (${placeholders})
-      `).all(...messageIds) as any[];
+      `, ...messageIds);
 
       for (const r of reactions) {
         if (!reactionsByMessage[r.message_id]) {
@@ -345,12 +346,12 @@ conversationsRouter.get('/:id/messages', requireAuth, (req: AuthenticatedRequest
 
     if (replyIds.length > 0) {
       const placeholders = replyIds.map(() => '?').join(',');
-      const replies = db.prepare(`
+      const replies = await db.all<any>(`
         SELECT m.id, m.text, m.type, m.file_name, m.voice_duration, u.display_name as sender_name
         FROM messages m
         JOIN users u ON u.id = m.sender_id
         WHERE m.id IN (${placeholders})
-      `).all(...replyIds) as any[];
+      `, ...replyIds);
 
       for (const r of replies) {
         replyMap[r.id] = {
@@ -379,6 +380,8 @@ conversationsRouter.get('/:id/messages', requireAuth, (req: AuthenticatedRequest
       voiceDuration: m.voice_duration,
       replyTo: m.reply_to_id ? replyMap[m.reply_to_id] || null : null,
       replyToId: m.reply_to_id,
+      seq: m.seq ? Number(m.seq) : undefined,
+      clientMessageId: m.client_message_id,
       isDeleted: Boolean(m.is_deleted),
       createdAt: m.created_at,
       updatedAt: m.updated_at,
@@ -393,13 +396,13 @@ conversationsRouter.get('/:id/messages', requireAuth, (req: AuthenticatedRequest
 });
 
 // Create or get "Saved Messages" ("Избранное")
-conversationsRouter.post('/saved', requireAuth, (req: AuthenticatedRequest, res) => {
+conversationsRouter.post('/saved', requireAuth, async (req: AuthenticatedRequest, res) => {
   const currentUserId = req.user!.userId;
 
   try {
-    const existing = db.prepare(`
+    const existing = await db.get<any>(`
       SELECT id FROM conversations WHERE created_by = ? AND is_saved = 1 LIMIT 1
-    `).get(currentUserId) as any;
+    `, currentUserId);
 
     if (existing) {
       return res.json({ id: existing.id, isNew: false });
@@ -408,19 +411,17 @@ conversationsRouter.post('/saved', requireAuth, (req: AuthenticatedRequest, res)
     const convId = crypto.randomUUID();
     const now = new Date().toISOString();
 
-    const createSaved = db.transaction(() => {
-      db.prepare(`
+    await db.transaction(async () => {
+      await db.run(`
         INSERT INTO conversations (id, type, name, avatar_url, created_by, is_saved, created_at, updated_at)
         VALUES (?, 'direct', 'Избранное', 'https://api.dicebear.com/7.x/bottts/svg?seed=saved_messages_star', ?, 1, ?, ?)
-      `).run(convId, currentUserId, now, now);
+      `, convId, currentUserId, now, now);
 
-      db.prepare(`
+      await db.run(`
         INSERT INTO conversation_members (conversation_id, user_id, role)
         VALUES (?, ?, 'owner')
-      `).run(convId, currentUserId);
+      `, convId, currentUserId);
     });
-
-    createSaved();
 
     broadcastToConversationMembers(convId, 'conversation:new', {
       id: convId,
@@ -438,32 +439,32 @@ conversationsRouter.post('/saved', requireAuth, (req: AuthenticatedRequest, res)
 });
 
 // Pin or unpin a message
-conversationsRouter.post('/:id/pin', requireAuth, (req: AuthenticatedRequest, res) => {
+conversationsRouter.post('/:id/pin', requireAuth, async (req: AuthenticatedRequest, res) => {
   const currentUserId = req.user!.userId;
   const convId = req.params.id;
-  const { messageId } = req.body; // null to unpin
+  const { messageId } = req.body;
 
   try {
-    const isMember = db.prepare(`
+    const isMember = await db.get<any>(`
       SELECT 1 FROM conversation_members WHERE conversation_id = ? AND user_id = ?
-    `).get(convId, currentUserId);
+    `, convId, currentUserId);
 
     if (!isMember) {
       return res.status(403).json({ error: 'Not a member of this conversation' });
     }
 
-    db.prepare(`
+    await db.run(`
       UPDATE conversations SET pinned_message_id = ? WHERE id = ?
-    `).run(messageId || null, convId);
+    `, messageId || null, convId);
 
     let pinnedMessage: any = null;
     if (messageId) {
-      const pm = db.prepare(`
+      const pm = await db.get<any>(`
         SELECT m.id, m.sender_id, m.text, m.type, m.file_name, m.file_url, m.voice_duration, m.created_at, u.display_name as sender_name
         FROM messages m
         JOIN users u ON u.id = m.sender_id
         WHERE m.id = ? AND m.is_deleted = 0
-      `).get(messageId) as any;
+      `, messageId);
 
       if (pm) {
         pinnedMessage = {
@@ -488,7 +489,7 @@ conversationsRouter.post('/:id/pin', requireAuth, (req: AuthenticatedRequest, re
 });
 
 // Search messages in a conversation
-conversationsRouter.get('/:id/search', requireAuth, (req: AuthenticatedRequest, res) => {
+conversationsRouter.get('/:id/search', requireAuth, async (req: AuthenticatedRequest, res) => {
   const currentUserId = req.user!.userId;
   const convId = req.params.id;
   const query = ((req.query.q as string) || '').trim();
@@ -498,15 +499,15 @@ conversationsRouter.get('/:id/search', requireAuth, (req: AuthenticatedRequest, 
   }
 
   try {
-    const isMember = db.prepare(`
+    const isMember = await db.get<any>(`
       SELECT 1 FROM conversation_members WHERE conversation_id = ? AND user_id = ?
-    `).get(convId, currentUserId);
+    `, convId, currentUserId);
 
     if (!isMember) {
       return res.status(403).json({ error: 'Not a member of this conversation' });
     }
 
-    const messages = db.prepare(`
+    const messages = await db.all<any>(`
       SELECT 
         m.id,
         m.conversation_id,
@@ -524,7 +525,7 @@ conversationsRouter.get('/:id/search', requireAuth, (req: AuthenticatedRequest, 
       WHERE m.conversation_id = ? AND m.is_deleted = 0 AND (m.text LIKE ? OR m.file_name LIKE ?)
       ORDER BY m.created_at DESC
       LIMIT 30
-    `).all(convId, `%${query}%`, `%${query}%`) as any[];
+    `, convId, `%${query}%`, `%${query}%`);
 
     res.json(messages.map((m) => ({
       id: m.id,
@@ -546,15 +547,15 @@ conversationsRouter.get('/:id/search', requireAuth, (req: AuthenticatedRequest, 
 });
 
 // Mark conversation as read
-conversationsRouter.post('/:id/read', requireAuth, (req: AuthenticatedRequest, res) => {
+conversationsRouter.post('/:id/read', requireAuth, async (req: AuthenticatedRequest, res) => {
   const currentUserId = req.user!.userId;
   const convId = req.params.id;
   const now = new Date().toISOString();
 
   try {
-    db.prepare(`
+    await db.run(`
       UPDATE conversation_members SET last_read_at = ? WHERE conversation_id = ? AND user_id = ?
-    `).run(now, convId, currentUserId);
+    `, now, convId, currentUserId);
 
     broadcastToConversationMembers(convId, 'conversation:read', {
       conversationId: convId,
@@ -570,21 +571,21 @@ conversationsRouter.post('/:id/read', requireAuth, (req: AuthenticatedRequest, r
 });
 
 // Toggle pin chat for current user
-conversationsRouter.post('/:id/pin-chat', requireAuth, (req: AuthenticatedRequest, res) => {
+conversationsRouter.post('/:id/pin-chat', requireAuth, async (req: AuthenticatedRequest, res) => {
   const currentUserId = req.user!.userId;
   const convId = req.params.id;
 
   try {
-    const member = db.prepare(`
+    const member = await db.get<any>(`
       SELECT is_pinned FROM conversation_members WHERE conversation_id = ? AND user_id = ?
-    `).get(convId, currentUserId) as any;
+    `, convId, currentUserId);
 
     if (!member) return res.status(404).json({ error: 'Chat not found' });
 
     const newPinned = member.is_pinned === 1 ? 0 : 1;
-    db.prepare(`
+    await db.run(`
       UPDATE conversation_members SET is_pinned = ? WHERE conversation_id = ? AND user_id = ?
-    `).run(newPinned, convId, currentUserId);
+    `, newPinned, convId, currentUserId);
 
     res.json({ success: true, isPinned: Boolean(newPinned) });
   } catch (err) {
@@ -593,21 +594,21 @@ conversationsRouter.post('/:id/pin-chat', requireAuth, (req: AuthenticatedReques
 });
 
 // Toggle mute chat for current user
-conversationsRouter.post('/:id/mute', requireAuth, (req: AuthenticatedRequest, res) => {
+conversationsRouter.post('/:id/mute', requireAuth, async (req: AuthenticatedRequest, res) => {
   const currentUserId = req.user!.userId;
   const convId = req.params.id;
 
   try {
-    const member = db.prepare(`
+    const member = await db.get<any>(`
       SELECT is_muted FROM conversation_members WHERE conversation_id = ? AND user_id = ?
-    `).get(convId, currentUserId) as any;
+    `, convId, currentUserId);
 
     if (!member) return res.status(404).json({ error: 'Chat not found' });
 
     const newMuted = member.is_muted === 1 ? 0 : 1;
-    db.prepare(`
+    await db.run(`
       UPDATE conversation_members SET is_muted = ? WHERE conversation_id = ? AND user_id = ?
-    `).run(newMuted, convId, currentUserId);
+    `, newMuted, convId, currentUserId);
 
     res.json({ success: true, isMuted: Boolean(newMuted) });
   } catch (err) {
@@ -616,21 +617,21 @@ conversationsRouter.post('/:id/mute', requireAuth, (req: AuthenticatedRequest, r
 });
 
 // Toggle archive chat for current user
-conversationsRouter.post('/:id/archive', requireAuth, (req: AuthenticatedRequest, res) => {
+conversationsRouter.post('/:id/archive', requireAuth, async (req: AuthenticatedRequest, res) => {
   const currentUserId = req.user!.userId;
   const convId = req.params.id;
 
   try {
-    const member = db.prepare(`
+    const member = await db.get<any>(`
       SELECT is_archived FROM conversation_members WHERE conversation_id = ? AND user_id = ?
-    `).get(convId, currentUserId) as any;
+    `, convId, currentUserId);
 
     if (!member) return res.status(404).json({ error: 'Chat not found' });
 
     const newArchived = member.is_archived === 1 ? 0 : 1;
-    db.prepare(`
+    await db.run(`
       UPDATE conversation_members SET is_archived = ? WHERE conversation_id = ? AND user_id = ?
-    `).run(newArchived, convId, currentUserId);
+    `, newArchived, convId, currentUserId);
 
     res.json({ success: true, isArchived: Boolean(newArchived) });
   } catch (err) {
@@ -639,20 +640,20 @@ conversationsRouter.post('/:id/archive', requireAuth, (req: AuthenticatedRequest
 });
 
 // Clear messages in conversation (for Saved Messages or clear history)
-conversationsRouter.post('/:id/clear', requireAuth, (req: AuthenticatedRequest, res) => {
+conversationsRouter.post('/:id/clear', requireAuth, async (req: AuthenticatedRequest, res) => {
   const currentUserId = req.user!.userId;
   const convId = req.params.id;
 
   try {
-    const isMember = db.prepare(`
+    const isMember = await db.get<any>(`
       SELECT 1 FROM conversation_members WHERE conversation_id = ? AND user_id = ?
-    `).get(convId, currentUserId);
+    `, convId, currentUserId);
 
     if (!isMember) return res.status(403).json({ error: 'Not allowed' });
 
-    db.prepare(`
+    await db.run(`
       UPDATE messages SET is_deleted = 1, text = 'История очищена' WHERE conversation_id = ?
-    `).run(convId);
+    `, convId);
 
     res.json({ success: true });
   } catch (err) {
@@ -661,7 +662,7 @@ conversationsRouter.post('/:id/clear', requireAuth, (req: AuthenticatedRequest, 
 });
 
 // Create channel
-conversationsRouter.post('/channel', requireAuth, (req: AuthenticatedRequest, res) => {
+conversationsRouter.post('/channel', requireAuth, async (req: AuthenticatedRequest, res) => {
   const currentUserId = req.user!.userId;
   const { name, description = '', avatarUrl } = req.body;
 
@@ -674,23 +675,23 @@ conversationsRouter.post('/channel', requireAuth, (req: AuthenticatedRequest, re
     const now = new Date().toISOString();
     const channelAvatar = avatarUrl || `https://api.dicebear.com/7.x/identicon/svg?seed=channel_${encodeURIComponent(name.trim())}`;
 
-    db.transaction(() => {
-      db.prepare(`
+    await db.transaction(async () => {
+      await db.run(`
         INSERT INTO conversations (id, type, name, avatar_url, description, is_channel, created_by, created_at, updated_at)
         VALUES (?, 'group', ?, ?, ?, 1, ?, ?, ?)
-      `).run(convId, name.trim(), channelAvatar, description.trim(), currentUserId, now, now);
+      `, convId, name.trim(), channelAvatar, description.trim(), currentUserId, now, now);
 
-      db.prepare(`
+      await db.run(`
         INSERT INTO conversation_members (conversation_id, user_id, role, last_read_at)
         VALUES (?, ?, 'owner', ?)
-      `).run(convId, currentUserId, now);
+      `, convId, currentUserId, now);
 
       const sysMsgId = crypto.randomUUID();
-      db.prepare(`
+      await db.run(`
         INSERT INTO messages (id, conversation_id, sender_id, text, type, created_at, updated_at)
         VALUES (?, ?, ?, ?, 'text', ?, ?)
-      `).run(sysMsgId, convId, currentUserId, `Канал "${name.trim()}" создан`, now, now);
-    })();
+      `, sysMsgId, convId, currentUserId, `Канал "${name.trim()}" создан`, now, now);
+    });
 
     broadcastToConversationMembers(convId, 'conversation:new', {
       id: convId,

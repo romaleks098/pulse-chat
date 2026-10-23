@@ -1,215 +1,295 @@
 import Database from 'better-sqlite3';
+import pg from 'pg';
 import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
+import { migrations } from './migrations/schema.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const dataDir = path.join(__dirname, '..', 'data');
-if (!fs.existsSync(dataDir)) {
-  fs.mkdirSync(dataDir, { recursive: true });
+const databaseUrl = process.env.DATABASE_URL?.trim();
+export const isPostgres = Boolean(databaseUrl && (databaseUrl.startsWith('postgres://') || databaseUrl.startsWith('postgresql://')));
+
+// PostgreSQL Pool instance (used when DATABASE_URL is set)
+let pgPool: pg.Pool | null = null;
+
+// SQLite Database instance (used when DATABASE_URL is NOT set, for local development)
+let sqliteDb: Database.Database | null = null;
+
+if (isPostgres) {
+  console.log('🐘 Initializing PostgreSQL database connection pool...');
+  pgPool = new pg.Pool({
+    connectionString: databaseUrl,
+    ssl: databaseUrl!.includes('localhost') ? false : { rejectUnauthorized: false },
+    max: 20,
+    idleTimeoutMillis: 30000,
+    connectionTimeoutMillis: 10000,
+  });
+
+  pgPool.on('error', (err) => {
+    console.error('Unexpected error on idle PostgreSQL client:', err);
+  });
+} else {
+  console.log('📁 Initializing local SQLite database...');
+  const dataDir = path.join(__dirname, '..', 'data');
+  if (!fs.existsSync(dataDir)) {
+    fs.mkdirSync(dataDir, { recursive: true });
+  }
+  const dbPath = path.join(dataDir, 'messenger.db');
+  sqliteDb = new Database(dbPath);
+  sqliteDb.pragma('journal_mode = WAL');
+  sqliteDb.pragma('foreign_keys = ON');
 }
 
-const dbPath = path.join(dataDir, 'messenger.db');
-export const db = new Database(dbPath);
+/**
+ * Translates standard '?' placeholders to PostgreSQL '$1, $2...' positional placeholders,
+ * safely ignoring any '?' characters inside single-quoted string literals.
+ */
+function translatePlaceholders(sql: string): string {
+  let paramIndex = 1;
+  return sql.replace(/(\?)(?=(?:[^']*'[^']*')*[^']*$)/g, () => `$${paramIndex++}`);
+}
 
-// Enable WAL mode for high concurrency
-db.pragma('journal_mode = WAL');
-db.pragma('foreign_keys = ON');
+/**
+ * Normalizes boolean/integer differences or date formatting if needed between engines.
+ */
+function normalizeParams(params: any[]): any[] {
+  return params.map((p) => {
+    if (p === undefined) return null;
+    return p;
+  });
+}
 
-export function initDatabase() {
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS users (
-      id TEXT PRIMARY KEY,
-      username TEXT UNIQUE NOT NULL COLLATE NOCASE,
-      display_name TEXT NOT NULL,
-      password_hash TEXT,
-      avatar_url TEXT,
-      auth_provider TEXT DEFAULT 'local',
-      provider_id TEXT,
-      status_text TEXT DEFAULT '',
-      last_seen DATETIME DEFAULT CURRENT_TIMESTAMP,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    );
+/**
+ * Unified Database Interface
+ */
+export interface IDatabase {
+  isPostgres: boolean;
+  query<T = any>(sql: string, params?: any[]): Promise<T[]>;
+  get<T = any>(sql: string, ...params: any[]): Promise<T | undefined>;
+  all<T = any>(sql: string, ...params: any[]): Promise<T[]>;
+  run(sql: string, ...params: any[]): Promise<{ lastInsertRowid: number | string; changes: number }>;
+  exec(sql: string): Promise<void>;
+  transaction<T>(fn: (trx: IDatabase) => Promise<T>): Promise<T>;
+  prepare(sql: string): {
+    get(...params: any[]): Promise<any>;
+    all(...params: any[]): Promise<any[]>;
+    run(...params: any[]): Promise<{ lastInsertRowid: number | string; changes: number }>;
+  };
+}
 
-    CREATE TABLE IF NOT EXISTS conversations (
-      id TEXT PRIMARY KEY,
-      type TEXT NOT NULL CHECK(type IN ('direct', 'group')),
-      name TEXT,
-      avatar_url TEXT,
-      created_by TEXT,
-      pinned_message_id TEXT,
-      is_saved INTEGER DEFAULT 0,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
-    );
+class PostgresDatabaseAdapter implements IDatabase {
+  public isPostgres = true;
+  private client: any;
 
-    CREATE TABLE IF NOT EXISTS conversation_members (
-      conversation_id TEXT NOT NULL,
-      user_id TEXT NOT NULL,
-      role TEXT DEFAULT 'member',
-      joined_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      PRIMARY KEY (conversation_id, user_id),
-      FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE,
-      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-    );
-
-    CREATE TABLE IF NOT EXISTS messages (
-      id TEXT PRIMARY KEY,
-      conversation_id TEXT NOT NULL,
-      sender_id TEXT NOT NULL,
-      text TEXT NOT NULL,
-      type TEXT DEFAULT 'text' CHECK(type IN ('text', 'image', 'file', 'voice')),
-      file_url TEXT,
-      file_name TEXT,
-      file_size INTEGER,
-      voice_duration REAL,
-      reply_to_id TEXT,
-      is_deleted INTEGER DEFAULT 0,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE,
-      FOREIGN KEY (sender_id) REFERENCES users(id) ON DELETE CASCADE,
-      FOREIGN KEY (reply_to_id) REFERENCES messages(id) ON DELETE SET NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS server_meta (
-      key TEXT PRIMARY KEY,
-      value TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS sync_events (
-      seq INTEGER PRIMARY KEY AUTOINCREMENT,
-      user_id TEXT,
-      conversation_id TEXT NOT NULL,
-      event_type TEXT NOT NULL,
-      payload TEXT NOT NULL,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_sync_events_seq ON sync_events(seq);
-    CREATE INDEX IF NOT EXISTS idx_sync_events_user ON sync_events(user_id, seq);
-    CREATE INDEX IF NOT EXISTS idx_sync_events_conv ON sync_events(conversation_id, seq);
-
-    CREATE TABLE IF NOT EXISTS reactions (
-      id TEXT PRIMARY KEY,
-      message_id TEXT NOT NULL,
-      user_id TEXT NOT NULL,
-      emoji TEXT NOT NULL,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      UNIQUE(message_id, user_id, emoji),
-      FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE,
-      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_messages_conv ON messages(conversation_id, created_at);
-    CREATE INDEX IF NOT EXISTS idx_members_user ON conversation_members(user_id);
-    CREATE INDEX IF NOT EXISTS idx_reactions_msg ON reactions(message_id);
-  `);
-
-  try {
-    db.exec(`ALTER TABLE users ADD COLUMN auth_provider TEXT DEFAULT 'local';`);
-  } catch {}
-  try {
-    db.exec(`ALTER TABLE users ADD COLUMN provider_id TEXT;`);
-  } catch {}
-  try {
-    db.exec(`ALTER TABLE conversations ADD COLUMN pinned_message_id TEXT;`);
-  } catch {}
-  try {
-    db.exec(`ALTER TABLE conversations ADD COLUMN is_saved INTEGER DEFAULT 0;`);
-  } catch {}
-  try {
-    db.exec(`ALTER TABLE conversations ADD COLUMN is_channel INTEGER DEFAULT 0;`);
-  } catch {}
-  try {
-    db.exec(`ALTER TABLE conversations ADD COLUMN description TEXT DEFAULT '';`);
-  } catch {}
-  try {
-    db.exec(`ALTER TABLE conversation_members ADD COLUMN last_read_at DATETIME;`);
-  } catch {}
-  try {
-    db.exec(`ALTER TABLE conversation_members ADD COLUMN is_pinned INTEGER DEFAULT 0;`);
-  } catch {}
-  try {
-    db.exec(`ALTER TABLE conversation_members ADD COLUMN is_muted INTEGER DEFAULT 0;`);
-  } catch {}
-  try {
-    db.exec(`ALTER TABLE conversation_members ADD COLUMN is_archived INTEGER DEFAULT 0;`);
-  } catch {}
-  try {
-    db.exec(`ALTER TABLE users ADD COLUMN bio TEXT DEFAULT '';`);
-  } catch {}
-  try {
-    db.exec(`ALTER TABLE users ADD COLUMN theme_settings TEXT DEFAULT '';`);
-  } catch {}
-  try {
-    db.exec(`ALTER TABLE messages ADD COLUMN voice_duration REAL;`);
-  } catch {}
-  try {
-    db.exec(`ALTER TABLE messages ADD COLUMN seq INTEGER;`);
-  } catch {}
-  try {
-    db.exec(`ALTER TABLE messages ADD COLUMN client_message_id TEXT;`);
-  } catch {}
-
-  // Migrate messages table check constraint if needed
-  try {
-    const tableSql = (db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='messages'").get() as any)?.sql || '';
-    if (tableSql && !tableSql.includes("'voice'")) {
-      db.exec(`
-        PRAGMA foreign_keys=OFF;
-        CREATE TABLE messages_migration (
-          id TEXT PRIMARY KEY,
-          conversation_id TEXT NOT NULL,
-          sender_id TEXT NOT NULL,
-          text TEXT NOT NULL,
-          type TEXT DEFAULT 'text' CHECK(type IN ('text', 'image', 'file', 'voice')),
-          file_url TEXT,
-          file_name TEXT,
-          file_size INTEGER,
-          voice_duration REAL,
-          reply_to_id TEXT,
-          is_deleted INTEGER DEFAULT 0,
-          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-          FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE,
-          FOREIGN KEY (sender_id) REFERENCES users(id) ON DELETE CASCADE,
-          FOREIGN KEY (reply_to_id) REFERENCES messages(id) ON DELETE SET NULL
-        );
-        INSERT INTO messages_migration (id, conversation_id, sender_id, text, type, file_url, file_name, file_size, reply_to_id, is_deleted, created_at, updated_at)
-          SELECT id, conversation_id, sender_id, text, type, file_url, file_name, file_size, reply_to_id, is_deleted, created_at, updated_at FROM messages;
-        DROP TABLE messages;
-        ALTER TABLE messages_migration RENAME TO messages;
-        CREATE INDEX IF NOT EXISTS idx_messages_conv ON messages(conversation_id, created_at);
-        PRAGMA foreign_keys=ON;
-      `);
-    }
-  } catch (err) {
-    console.error('Migration error:', err);
+  constructor(client: any) {
+    this.client = client;
   }
 
-  // Run cleanup of sync events older than 30 days
-  cleanupOldSyncEvents();
+  async query<T = any>(sql: string, params: any[] = []): Promise<T[]> {
+    const pgSql = translatePlaceholders(sql);
+    const cleanParams = normalizeParams(params);
+    const result = await this.client.query(pgSql, cleanParams);
+    return result.rows as T[];
+  }
+
+  async get<T = any>(sql: string, ...params: any[]): Promise<T | undefined> {
+    const rows = await this.query<T>(sql, params);
+    return rows[0];
+  }
+
+  async all<T = any>(sql: string, ...params: any[]): Promise<T[]> {
+    return this.query<T>(sql, params);
+  }
+
+  async run(sql: string, ...params: any[]): Promise<{ lastInsertRowid: number | string; changes: number }> {
+    const pgSql = translatePlaceholders(sql);
+    const cleanParams = normalizeParams(params);
+    const result = await this.client.query(pgSql, cleanParams);
+    const firstRow = result.rows[0];
+    const lastId = firstRow?.id || firstRow?.seq || 0;
+    return {
+      lastInsertRowid: lastId,
+      changes: result.rowCount || 0,
+    };
+  }
+
+  async exec(sql: string): Promise<void> {
+    await this.client.query(sql);
+  }
+
+  async transaction<T>(fn: (trx: IDatabase) => Promise<T>): Promise<T> {
+    if (typeof this.client.connect === 'function') {
+      // Current client is the Pool, check out a client for transaction
+      const client = await this.client.connect();
+      const trxAdapter = new PostgresDatabaseAdapter(client);
+      try {
+        await client.query('BEGIN');
+        const res = await fn(trxAdapter);
+        await client.query('COMMIT');
+        return res;
+      } catch (err) {
+        await client.query('ROLLBACK');
+        throw err;
+      } finally {
+        client.release();
+      }
+    } else {
+      // Already inside a client
+      try {
+        await this.client.query('SAVEPOINT sp');
+        const res = await fn(this);
+        await this.client.query('RELEASE SAVEPOINT sp');
+        return res;
+      } catch (err) {
+        await this.client.query('ROLLBACK TO SAVEPOINT sp');
+        throw err;
+      }
+    }
+  }
+
+  prepare(sql: string) {
+    return {
+      get: (...params: any[]) => this.get(sql, ...params),
+      all: (...params: any[]) => this.all(sql, ...params),
+      run: (...params: any[]) => this.run(sql, ...params),
+    };
+  }
+}
+
+class SQLiteDatabaseAdapter implements IDatabase {
+  public isPostgres = false;
+  private sqlite: Database.Database;
+
+  constructor(sqlite: Database.Database) {
+    this.sqlite = sqlite;
+  }
+
+  async query<T = any>(sql: string, params: any[] = []): Promise<T[]> {
+    const stmt = this.sqlite.prepare(sql);
+    const cleanParams = normalizeParams(params);
+    return stmt.all(...cleanParams) as T[];
+  }
+
+  async get<T = any>(sql: string, ...params: any[]): Promise<T | undefined> {
+    const stmt = this.sqlite.prepare(sql);
+    const cleanParams = normalizeParams(params);
+    return stmt.get(...cleanParams) as T | undefined;
+  }
+
+  async all<T = any>(sql: string, ...params: any[]): Promise<T[]> {
+    return this.query<T>(sql, params);
+  }
+
+  async run(sql: string, ...params: any[]): Promise<{ lastInsertRowid: number | string; changes: number }> {
+    const stmt = this.sqlite.prepare(sql);
+    const cleanParams = normalizeParams(params);
+    const info = stmt.run(...cleanParams);
+    return {
+      lastInsertRowid: typeof info.lastInsertRowid === 'bigint' ? Number(info.lastInsertRowid) : info.lastInsertRowid,
+      changes: info.changes,
+    };
+  }
+
+  async exec(sql: string): Promise<void> {
+    this.sqlite.exec(sql);
+  }
+
+  async transaction<T>(fn: (trx: IDatabase) => Promise<T>): Promise<T> {
+    // Run inside BEGIN / COMMIT
+    this.sqlite.exec('BEGIN');
+    try {
+      const res = await fn(this);
+      this.sqlite.exec('COMMIT');
+      return res;
+    } catch (err) {
+      this.sqlite.exec('ROLLBACK');
+      throw err;
+    }
+  }
+
+  prepare(sql: string) {
+    return {
+      get: (...params: any[]) => this.get(sql, ...params),
+      all: (...params: any[]) => this.all(sql, ...params),
+      run: (...params: any[]) => this.run(sql, ...params),
+    };
+  }
+}
+
+export const db: IDatabase = isPostgres
+  ? new PostgresDatabaseAdapter(pgPool!)
+  : new SQLiteDatabaseAdapter(sqliteDb!);
+
+/**
+ * Migration runner: ensures schema_migrations exists, applies all pending migrations
+ */
+export async function initDatabase() {
+  console.log(`[Database] Initializing schema (${isPostgres ? 'PostgreSQL' : 'SQLite'})...`);
+
+  // Create migrations tracker table
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS schema_migrations (
+      version INTEGER PRIMARY KEY,
+      name TEXT NOT NULL,
+      applied_at ${isPostgres ? 'TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP' : 'DATETIME DEFAULT CURRENT_TIMESTAMP'}
+    );
+  `);
+
+  // Query existing applied migration versions
+  const appliedRows = await db.all<{ version: number }>('SELECT version FROM schema_migrations ORDER BY version ASC');
+  const appliedVersions = new Set(appliedRows.map((r) => r.version));
+
+  for (const m of migrations) {
+    if (!appliedVersions.has(m.version)) {
+      console.log(`[Database] Applying migration ${m.version}: ${m.name}...`);
+      const statements = m.up(isPostgres);
+
+      for (const statement of statements) {
+        try {
+          await db.exec(statement);
+        } catch (stmtErr: any) {
+          // If table/index already exists, ignore and continue
+          if (!stmtErr.message.includes('already exists') && !stmtErr.message.includes('duplicate')) {
+            console.warn(`[Database] Warning during migration ${m.name}:`, stmtErr.message);
+          }
+        }
+      }
+
+      await db.run(
+        'INSERT INTO schema_migrations (version, name) VALUES (?, ?)',
+        m.version,
+        m.name
+      );
+      console.log(`[Database] Successfully applied migration ${m.name}`);
+    }
+  }
+
+  // Cleanup old sync events
+  await cleanupOldSyncEvents();
+  console.log('[Database] Schema initialization and migrations complete.');
 }
 
 let cachedServerEpoch = '';
 
-export function getServerEpoch(): string {
+export async function getServerEpoch(): Promise<string> {
   if (cachedServerEpoch) return cachedServerEpoch;
 
   try {
-    const row = db.prepare(`SELECT value FROM server_meta WHERE key = 'server_epoch'`).get() as any;
+    const row = await db.get<{ value: string }>('SELECT value FROM server_meta WHERE key = ?', 'server_epoch');
     if (row && typeof row.value === 'string' && row.value) {
       cachedServerEpoch = row.value;
       return cachedServerEpoch;
     }
 
     const newEpoch = crypto.randomUUID();
-    db.prepare(`INSERT OR REPLACE INTO server_meta (key, value) VALUES ('server_epoch', ?)`).run(newEpoch);
+    await db.run(
+      'INSERT INTO server_meta (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value',
+      'server_epoch',
+      newEpoch
+    );
     cachedServerEpoch = newEpoch;
     return newEpoch;
   } catch (err) {
@@ -218,27 +298,33 @@ export function getServerEpoch(): string {
   }
 }
 
-export function cleanupOldSyncEvents() {
+export async function cleanupOldSyncEvents() {
   try {
-    db.prepare(`DELETE FROM sync_events WHERE created_at < datetime('now', '-30 days')`).run();
+    const query = isPostgres
+      ? "DELETE FROM sync_events WHERE created_at < NOW() - INTERVAL '30 days'"
+      : "DELETE FROM sync_events WHERE created_at < datetime('now', '-30 days')";
+    await db.exec(query);
   } catch (err) {
     console.error('Error cleaning old sync events:', err);
   }
 }
 
-export function recordSyncEvent(
+export async function recordSyncEvent(
   eventType: string,
   conversationId: string,
   payload: any,
   userId?: string
-): number {
+): Promise<number> {
   try {
-    const info = db.prepare(`
-      INSERT INTO sync_events (user_id, conversation_id, event_type, payload)
-      VALUES (?, ?, ?, ?)
-    `).run(userId || null, conversationId, eventType, JSON.stringify(payload));
+    const row = await db.get<{ seq: number }>(
+      'INSERT INTO sync_events (user_id, conversation_id, event_type, payload) VALUES (?, ?, ?, ?) RETURNING seq',
+      userId || null,
+      conversationId,
+      eventType,
+      JSON.stringify(payload)
+    );
 
-    const seq = Number(info.lastInsertRowid);
+    const seq = Number(row?.seq || 0);
     return seq;
   } catch (err) {
     console.error('Failed to record sync event:', err);

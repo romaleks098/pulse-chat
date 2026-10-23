@@ -5,7 +5,7 @@ import { hashPassword, verifyPassword, signToken, requireAuth, AuthenticatedRequ
 
 export const authRouter = Router();
 
-authRouter.post('/register', (req, res) => {
+authRouter.post('/register', async (req, res) => {
   const { username, password, displayName, avatarUrl } = req.body;
 
   if (!username || !password || !displayName) {
@@ -22,7 +22,7 @@ authRouter.post('/register', (req, res) => {
   }
 
   try {
-    const existing = db.prepare('SELECT id FROM users WHERE username = ?').get(cleanUsername);
+    const existing = await db.get('SELECT id FROM users WHERE username = ?', cleanUsername);
     if (existing) {
       return res.status(400).json({ error: 'Пользователь с таким логином уже существует' });
     }
@@ -31,10 +31,10 @@ authRouter.post('/register', (req, res) => {
     const passwordHash = hashPassword(password);
     const finalAvatar = avatarUrl || `https://api.dicebear.com/7.x/bottts/svg?seed=${cleanUsername}`;
 
-    db.prepare(`
+    await db.run(`
       INSERT INTO users (id, username, display_name, password_hash, avatar_url)
       VALUES (?, ?, ?, ?, ?)
-    `).run(userId, cleanUsername, displayName.trim(), passwordHash, finalAvatar);
+    `, userId, cleanUsername, displayName.trim(), passwordHash, finalAvatar);
 
     const token = signToken({ userId, username: cleanUsername });
 
@@ -54,7 +54,7 @@ authRouter.post('/register', (req, res) => {
   }
 });
 
-authRouter.post('/login', (req, res) => {
+authRouter.post('/login', async (req, res) => {
   const { username, password } = req.body;
 
   if (!username || !password) {
@@ -64,7 +64,7 @@ authRouter.post('/login', (req, res) => {
   const cleanUsername = username.trim().toLowerCase();
 
   try {
-    const user = db.prepare('SELECT * FROM users WHERE username = ?').get(cleanUsername) as any;
+    const user = await db.get<any>('SELECT * FROM users WHERE username = ?', cleanUsername);
     if (!user) {
       return res.status(400).json({ error: 'Неверное имя пользователя или пароль' });
     }
@@ -125,7 +125,7 @@ authRouter.post('/social', async (req, res) => {
 
   try {
     // Find existing user by provider and providerId
-    let user = db.prepare('SELECT * FROM users WHERE auth_provider = ? AND provider_id = ?').get(provider, providerId) as any;
+    let user = await db.get<any>('SELECT * FROM users WHERE auth_provider = ? AND provider_id = ?', provider, providerId);
 
     if (!user) {
       // Generate clean unique username
@@ -134,7 +134,7 @@ authRouter.post('/social', async (req, res) => {
 
       let finalUsername = baseUsername;
       let counter = 1;
-      while (db.prepare('SELECT 1 FROM users WHERE username = ?').get(finalUsername)) {
+      while (await db.get('SELECT 1 FROM users WHERE username = ?', finalUsername)) {
         finalUsername = `${baseUsername}_${counter++}`;
       }
 
@@ -144,10 +144,10 @@ authRouter.post('/social', async (req, res) => {
       // Random secure password hash so social accounts cannot be logged into with a blank password
       const passwordHash = hashPassword(crypto.randomBytes(32).toString('hex'));
 
-      db.prepare(`
+      await db.run(`
         INSERT INTO users (id, username, display_name, password_hash, avatar_url, auth_provider, provider_id)
         VALUES (?, ?, ?, ?, ?, ?, ?)
-      `).run(userId, finalUsername, displayName, passwordHash, avatarUrl, provider, providerId);
+      `, userId, finalUsername, displayName, passwordHash, avatarUrl, provider, providerId);
 
       user = {
         id: userId,
@@ -185,8 +185,8 @@ authRouter.get('/providers', (_req, res) => {
 });
 
 // Helper for upserting OAuth user and returning token
-function upsertOAuthUser(provider: string, providerId: string, usernameBase: string, displayName: string, avatarUrl: string): string {
-  let user = db.prepare('SELECT * FROM users WHERE auth_provider = ? AND provider_id = ?').get(provider, providerId) as any;
+async function upsertOAuthUser(provider: string, providerId: string, usernameBase: string, displayName: string, avatarUrl: string): Promise<string> {
+  let user = await db.get<any>('SELECT * FROM users WHERE auth_provider = ? AND provider_id = ?', provider, providerId);
 
   if (!user) {
     let cleanUsername = usernameBase.trim().toLowerCase().replace(/[^a-z0-9_]/g, '');
@@ -194,17 +194,17 @@ function upsertOAuthUser(provider: string, providerId: string, usernameBase: str
 
     let finalUsername = cleanUsername;
     let counter = 1;
-    while (db.prepare('SELECT 1 FROM users WHERE username = ?').get(finalUsername)) {
+    while (await db.get('SELECT 1 FROM users WHERE username = ?', finalUsername)) {
       finalUsername = `${cleanUsername}_${counter++}`;
     }
 
     const userId = crypto.randomUUID();
     const passwordHash = hashPassword(crypto.randomBytes(32).toString('hex'));
 
-    db.prepare(`
+    await db.run(`
       INSERT INTO users (id, username, display_name, password_hash, avatar_url, auth_provider, provider_id)
       VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(userId, finalUsername, displayName.trim() || finalUsername, passwordHash, avatarUrl, provider, providerId);
+    `, userId, finalUsername, displayName.trim() || finalUsername, passwordHash, avatarUrl, provider, providerId);
 
     user = { id: userId, username: finalUsername };
   }
@@ -301,7 +301,7 @@ authRouter.get('/github/callback', async (req, res) => {
   // Direct Browser OAuth flow
   if (directAuth) {
     const cleanUser = customName.trim().replace(/[^a-zA-Z0-9_-]/g, '') || 'github_user';
-    const token = upsertOAuthUser(
+    const token = await upsertOAuthUser(
       'github',
       `gh_${cleanUser}`,
       cleanUser,
@@ -343,7 +343,7 @@ authRouter.get('/github/callback', async (req, res) => {
     });
     const ghUser = await userRes.json() as any;
 
-    const token = upsertOAuthUser(
+    const token = await upsertOAuthUser(
       'github',
       String(ghUser.id),
       ghUser.login,
@@ -446,7 +446,7 @@ authRouter.get('/google/callback', async (req, res) => {
   // Direct Browser OAuth flow
   if (directAuth) {
     const cleanUser = email.split('@')[0].replace(/[^a-zA-Z0-9_-]/g, '') || 'google_user';
-    const token = upsertOAuthUser(
+    const token = await upsertOAuthUser(
       'google',
       `google_${cleanUser}`,
       cleanUser,
@@ -488,7 +488,7 @@ authRouter.get('/google/callback', async (req, res) => {
     });
     const gUser = await profileRes.json() as any;
 
-    const token = upsertOAuthUser(
+    const token = await upsertOAuthUser(
       'google',
       gUser.id,
       gUser.email ? gUser.email.split('@')[0] : `google_${gUser.id}`,
@@ -559,14 +559,14 @@ authRouter.get('/telegram', (_req, res) => {
   `);
 });
 
-authRouter.get('/telegram/callback', (req, res) => {
+authRouter.get('/telegram/callback', async (req, res) => {
   const data = req.query as any;
   const directAuth = data.direct_auth;
 
   if (directAuth) {
     const cleanUser = (data.username || 'tg_user').replace(/[^a-zA-Z0-9_]/g, '');
     const displayName = data.first_name || cleanUser;
-    const token = upsertOAuthUser(
+    const token = await upsertOAuthUser(
       'telegram',
       `tg_${cleanUser}`,
       cleanUser,
@@ -606,7 +606,7 @@ authRouter.get('/telegram/callback', (req, res) => {
   const displayName = [data.first_name, data.last_name].filter(Boolean).join(' ') || data.username || 'Telegram User';
   const avatarUrl = data.photo_url || `https://api.dicebear.com/7.x/bottts/svg?seed=tg_${data.id}`;
 
-  const token = upsertOAuthUser(
+  const token = await upsertOAuthUser(
     'telegram',
     String(data.id),
     data.username || `tg_${data.id}`,
@@ -617,9 +617,9 @@ authRouter.get('/telegram/callback', (req, res) => {
   res.redirect(`/?token=${token}`);
 });
 
-authRouter.get('/me', requireAuth, (req: AuthenticatedRequest, res) => {
+authRouter.get('/me', requireAuth, async (req: AuthenticatedRequest, res) => {
   try {
-    const user = db.prepare('SELECT id, username, display_name, avatar_url, status_text, bio, theme_settings, last_seen, created_at FROM users WHERE id = ?').get(req.user!.userId) as any;
+    const user = await db.get<any>('SELECT id, username, display_name, avatar_url, status_text, bio, theme_settings, last_seen, created_at FROM users WHERE id = ?', req.user!.userId);
     if (!user) {
       return res.status(404).json({ error: 'User not found' });
     }
@@ -639,7 +639,7 @@ authRouter.get('/me', requireAuth, (req: AuthenticatedRequest, res) => {
   }
 });
 
-authRouter.put('/profile', requireAuth, (req: AuthenticatedRequest, res) => {
+authRouter.put('/profile', requireAuth, async (req: AuthenticatedRequest, res) => {
   const { username, displayName, avatarUrl, statusText, bio, themeSettings } = req.body;
 
   try {
@@ -651,7 +651,7 @@ authRouter.put('/profile', requireAuth, (req: AuthenticatedRequest, res) => {
       if (cleanUser.length < 3) {
         return res.status(400).json({ error: 'Имя пользователя должно быть не менее 3 символов' });
       }
-      const existing = db.prepare('SELECT id FROM users WHERE username = ? AND id != ?').get(cleanUser, req.user!.userId);
+      const existing = await db.get('SELECT id FROM users WHERE username = ? AND id != ?', cleanUser, req.user!.userId);
       if (existing) {
         return res.status(400).json({ error: 'Это имя пользователя уже занято' });
       }
@@ -681,10 +681,10 @@ authRouter.put('/profile', requireAuth, (req: AuthenticatedRequest, res) => {
 
     if (updates.length > 0) {
       params.push(req.user!.userId);
-      db.prepare(`UPDATE users SET ${updates.join(', ')} WHERE id = ?`).run(...params);
+      await db.run(`UPDATE users SET ${updates.join(', ')} WHERE id = ?`, ...params);
     }
 
-    const updatedUser = db.prepare('SELECT id, username, display_name, avatar_url, status_text, bio, theme_settings FROM users WHERE id = ?').get(req.user!.userId) as any;
+    const updatedUser = await db.get<any>('SELECT id, username, display_name, avatar_url, status_text, bio, theme_settings FROM users WHERE id = ?', req.user!.userId);
     res.json({
       id: updatedUser.id,
       username: updatedUser.username,

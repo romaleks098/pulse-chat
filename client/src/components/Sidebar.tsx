@@ -249,9 +249,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
     >
       {/* Network connection banner */}
       {connectionStatus !== 'connected' && (
-        <div className="bg-amber-500/20 border-b border-amber-500/30 px-3 py-1 text-[11px] text-amber-300 flex items-center justify-center gap-1.5 shrink-0 animate-pulse">
-          <WifiOff className="w-3.5 h-3.5" />
-          <span>{connectionStatus === 'connecting' ? 'Подключение к сети...' : 'Нет соединения с сервером'}</span>
+        <div className="bg-amber-500/15 border-b border-amber-500/25 px-3 py-1.5 text-[11px] text-amber-300 flex items-center justify-center gap-2 shrink-0 animate-pulse">
+          {connectionStatus === 'connecting' ? (
+            <div className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-ping" />
+          ) : (
+            <WifiOff className="w-3.5 h-3.5 shrink-0" />
+          )}
+          <span>{connectionStatus === 'connecting' ? 'Подключение… (сервер просыпается)' : 'Переподключение к серверу…'}</span>
         </div>
       )}
 

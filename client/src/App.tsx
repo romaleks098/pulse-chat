@@ -15,7 +15,7 @@ import { SettingsModal } from './components/SettingsModal';
 import { Download } from 'lucide-react';
 
 const MainLayout: React.FC = () => {
-  const { currentUser, activeConversationId, selectConversation } = useChat();
+  const { currentUser, isAuthInitializing, activeConversationId, selectConversation } = useChat();
 
   const [isNewChatOpen, setIsNewChatOpen] = useState(false);
   const [isPhoneConnectOpen, setIsPhoneConnectOpen] = useState(false);
@@ -47,6 +47,31 @@ const MainLayout: React.FC = () => {
     }
     setDeferredPrompt(null);
   };
+
+  if (isAuthInitializing) {
+    return (
+      <div className="h-screen w-screen flex flex-col items-center justify-center bg-[var(--bg-app,#090d16)] text-white select-none">
+        <div className="relative flex flex-col items-center max-w-sm px-6 text-center animate-fade-in">
+          {/* Animated Glowing Logo */}
+          <div className="relative mb-6">
+            <div className="absolute inset-0 bg-indigo-500/25 blur-2xl rounded-full animate-pulse" />
+            <div className="relative w-20 h-20 rounded-2xl bg-gradient-to-tr from-indigo-600 to-violet-500 flex items-center justify-center shadow-xl shadow-indigo-500/30 border border-white/10">
+              <span className="text-3xl font-black tracking-tight text-white">⚡</span>
+            </div>
+          </div>
+
+          <h2 className="text-xl font-bold tracking-tight mb-2">PulseChat</h2>
+          <div className="flex items-center gap-2 text-indigo-400 font-medium text-sm mb-2">
+            <span className="w-2 h-2 rounded-full bg-indigo-400 animate-ping" />
+            <span>Подключение к серверу…</span>
+          </div>
+          <p className="text-xs text-slate-400 leading-relaxed">
+            Сервер просыпается. На бесплатном тарифе это может занять около 30 секунд. Пожалуйста, подождите…
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   if (!currentUser) {
     return <AuthScreen />;

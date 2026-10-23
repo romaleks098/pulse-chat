@@ -16,6 +16,7 @@ interface ChatContextType {
   typingUsers: string[];
   loadingMessages: boolean;
   connectionStatus: 'connected' | 'connecting' | 'disconnected';
+  isAuthInitializing: boolean;
   login: (credentials: { username: string; password: string }) => Promise<void>;
   loginSocial: (provider: 'telegram' | 'google' | 'github', data: any) => Promise<void>;
   register: (data: { username: string; password: string; displayName: string; avatarUrl?: string }) => Promise<void>;
@@ -63,6 +64,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [typingMap, setTypingMap] = useState<Record<string, Record<string, string>>>({}); // convId -> { userId: name }
   const [loadingMessages, setLoadingMessages] = useState<boolean>(false);
   const [connectionStatus, setConnectionStatus] = useState<'connected' | 'connecting' | 'disconnected'>('connecting');
+  const [isAuthInitializing, setIsAuthInitializing] = useState<boolean>(Boolean(token));
 
   const activeConversationIdRef = useRef<string | null>(activeConversationId);
   useEffect(() => {
@@ -268,18 +270,50 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   }, []);
 
-  // Initialize Auth
+  // Initialize Auth with cold-start retry
   useEffect(() => {
-    if (token) {
-      api.getMe()
-        .then((user) => {
-          setCurrentUser(user);
-          socketService.connect(token);
-        })
-        .catch(() => {
-          logout();
-        });
+    if (!token) {
+      setIsAuthInitializing(false);
+      return;
     }
+
+    let isCancelled = false;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const fetchUser = async (attempt = 1) => {
+      try {
+        setConnectionStatus('connecting');
+        const user = await api.getMe();
+        if (isCancelled) return;
+        setCurrentUser(user);
+        setIsAuthInitializing(false);
+        setConnectionStatus('connected');
+        socketService.connect(token);
+      } catch (err: any) {
+        if (isCancelled) return;
+        // If explicitly unauthorized (expired or revoked token), log out
+        if (err.status === 401 || err.status === 403) {
+          setIsAuthInitializing(false);
+          logout();
+          return;
+        }
+
+        // If server is cold starting or network is momentarily unavailable, retry without logging out!
+        setConnectionStatus('connecting');
+        const delay = Math.min(1000 * Math.pow(1.5, attempt), 5000);
+        console.log(`[PulseChat] Server cold start/connecting, retrying in ${delay}ms (attempt ${attempt})...`);
+        retryTimer = setTimeout(() => {
+          fetchUser(attempt + 1);
+        }, delay);
+      }
+    };
+
+    fetchUser();
+
+    return () => {
+      isCancelled = true;
+      if (retryTimer) clearTimeout(retryTimer);
+    };
   }, [token]);
 
   // Socket event listeners
@@ -677,6 +711,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
         typingUsers: activeTyping,
         loadingMessages,
         connectionStatus,
+        isAuthInitializing,
         login,
         loginSocial,
         register,
