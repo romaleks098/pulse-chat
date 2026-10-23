@@ -340,8 +340,9 @@ export async function initDatabase() {
     }
   }
 
-  // Cleanup old sync events
+  // Cleanup old sync events and expired oauth states
   await cleanupOldSyncEvents();
+  await cleanupExpiredOAuthStates();
   console.log('[Database] Schema initialization and migrations complete.');
 }
 
@@ -379,6 +380,17 @@ export async function cleanupOldSyncEvents() {
     await db.exec(query);
   } catch (err) {
     console.error('Error cleaning old sync events:', err);
+  }
+}
+
+export async function cleanupExpiredOAuthStates() {
+  try {
+    const query = isPostgres
+      ? "DELETE FROM oauth_states WHERE expires_at < NOW() OR (used = 1 AND created_at < NOW() - INTERVAL '1 hour')"
+      : "DELETE FROM oauth_states WHERE expires_at < datetime('now') OR (used = 1 AND created_at < datetime('now', '-1 hour'))";
+    await db.exec(query);
+  } catch (err: any) {
+    console.error('Error cleaning expired oauth states:', err.message);
   }
 }
 

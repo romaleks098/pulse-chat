@@ -576,6 +576,7 @@ authRouter.get('/github', async (req, res) => {
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
     sameSite: 'lax',
+    path: '/api/auth',
     maxAge: 10 * 60 * 1000,
   });
 
@@ -648,7 +649,10 @@ authRouter.get('/github/callback', async (req, res) => {
     return res.redirect('/?oauth_error=oauth_state_mismatch');
   }
 
-  res.clearCookie('pulse_oauth_state');
+  res.clearCookie('pulse_oauth_state', {
+    httpOnly: true,
+    path: '/api/auth',
+  });
 
   const codeChallenge = savedState?.codeChallenge || (req.query.code_challenge as string);
   const codeChallengeMethod = savedState?.codeChallengeMethod || (req.query.code_challenge_method as string) || 'S256';
@@ -781,6 +785,7 @@ authRouter.get('/google', async (req, res) => {
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
     sameSite: 'lax',
+    path: '/api/auth',
     maxAge: 10 * 60 * 1000,
   });
 
@@ -854,7 +859,10 @@ authRouter.get('/google/callback', async (req, res) => {
     return res.redirect('/?oauth_error=oauth_state_mismatch');
   }
 
-  res.clearCookie('pulse_oauth_state');
+  res.clearCookie('pulse_oauth_state', {
+    httpOnly: true,
+    path: '/api/auth',
+  });
 
   const codeChallenge = savedState?.codeChallenge || (req.query.code_challenge as string);
   const codeChallengeMethod = savedState?.codeChallengeMethod || (req.query.code_challenge_method as string) || 'S256';
@@ -1169,6 +1177,19 @@ function getTelegramWebhookSecret(): string {
   return crypto.createHmac('sha256', jwtSecret).update(botToken).digest('hex').slice(0, 48);
 }
 
+/**
+ * Constant-time string comparison to prevent timing attacks on webhook tokens
+ */
+function safeTimingEqual(a: string | undefined, b: string | undefined): boolean {
+  if (typeof a !== 'string' || typeof b !== 'string') return false;
+  const bufA = Buffer.from(a, 'utf-8');
+  const bufB = Buffer.from(b, 'utf-8');
+  if (bufA.length !== bufB.length) {
+    return false;
+  }
+  return crypto.timingSafeEqual(bufA, bufB);
+}
+
 export async function setupTelegramWebhook() {
   const { telegramBotToken, publicUrl } = getOAuthEnv();
   console.log(`[Telegram Setup] Webhook initialization:`, {
@@ -1224,20 +1245,13 @@ authRouter.post('/telegram/bot/session', authRateLimiter(20), async (req, res) =
 // 2. Telegram webhook for /start <token> messages from the bot
 authRouter.post('/telegram/webhook', async (req, res) => {
   try {
-    // Verify Telegram secret token header to ensure authenticity
-    const incomingSecret = req.headers['x-telegram-bot-api-secret-token'];
+    // Verify Telegram secret token header in constant time to prevent timing attacks
+    const incomingSecret = req.headers['x-telegram-bot-api-secret-token'] as string | undefined;
     const expectedSecret = getTelegramWebhookSecret();
 
-    if (process.env.NODE_ENV === 'production') {
-      if (!incomingSecret || incomingSecret !== expectedSecret) {
-        console.warn('[Telegram Webhook] Unauthorized request rejected: X-Telegram-Bot-Api-Secret-Token mismatch or missing');
-        return res.status(403).json({ error: 'Unauthorized webhook' });
-      }
-    } else {
-      if (incomingSecret && incomingSecret !== expectedSecret) {
-        console.warn('[Telegram Webhook] Unauthorized request rejected: secret token mismatch');
-        return res.status(403).json({ error: 'Unauthorized webhook' });
-      }
+    if (!incomingSecret || !safeTimingEqual(incomingSecret, expectedSecret)) {
+      console.warn('[Telegram Webhook] Unauthorized request rejected: X-Telegram-Bot-Api-Secret-Token mismatch or missing');
+      return res.status(403).json({ error: 'Unauthorized webhook' });
     }
 
     const update = req.body;
