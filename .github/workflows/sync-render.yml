@@ -1,0 +1,89 @@
+name: Sync Render Cloud Environment
+
+on:
+  workflow_dispatch:
+
+jobs:
+  update-render:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Update Render Environment Variables
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          SERVICE_ID: srv-dbdkgbcs728c73c9o2m0
+        run: |
+          node -e '
+            const https = require("https");
+
+            const apiKey = process.env.RENDER_API_KEY;
+            const serviceId = process.env.SERVICE_ID;
+            const googleClientId = process.env.GOOGLE_CLIENT_ID;
+            const googleClientSecret = process.env.GOOGLE_CLIENT_SECRET;
+
+            function request(method, path, body) {
+              return new Promise((resolve, reject) => {
+                const req = https.request({
+                  hostname: "api.render.com",
+                  path: "/v1" + path,
+                  method: method,
+                  headers: {
+                    "Authorization": "Bearer " + apiKey,
+                    "Content-Type": "application/json",
+                    "Accept": "application/json"
+                  }
+                }, (res) => {
+                  let data = "";
+                  res.on("data", chunk => data += chunk);
+                  res.on("end", () => {
+                    try {
+                      resolve({ status: res.statusCode, body: data ? JSON.parse(data) : null });
+                    } catch (e) {
+                      resolve({ status: res.statusCode, body: data });
+                    }
+                  });
+                });
+                req.on("error", reject);
+                if (body) req.write(JSON.stringify(body));
+                req.end();
+              });
+            }
+
+            async function run() {
+              console.log("Fetching existing env vars for service:", serviceId);
+              const getRes = await request("GET", `/services/${serviceId}/env-vars`);
+              console.log("Get status:", getRes.status, JSON.stringify(getRes.body));
+
+              let envMap = new Map();
+              if (Array.isArray(getRes.body)) {
+                for (const item of getRes.body) {
+                  const ev = item.envVar || item;
+                  if (ev.key) envMap.set(ev.key, ev.value);
+                }
+              }
+
+              envMap.set("PORT", "3001");
+              envMap.set("GOOGLE_CLIENT_ID", googleClientId);
+              envMap.set("GOOGLE_CLIENT_SECRET", googleClientSecret);
+
+              const envList = [];
+              for (const [key, value] of envMap.entries()) {
+                envList.push({ key, value });
+              }
+
+              console.log("Updating env vars on Render with keys:", envList.map(e => e.key));
+              const putRes = await request("PUT", `/services/${serviceId}/env-vars`, envList);
+              console.log("PUT status:", putRes.status, JSON.stringify(putRes.body));
+
+              console.log("Triggering deploy on Render...");
+              const deployRes = await request("POST", `/services/${serviceId}/deploys`, { clearCache: "do_not_clear" });
+              console.log("Deploy status:", deployRes.status, JSON.stringify(deployRes.body));
+              console.log("Render environment updated successfully!");
+            }
+
+            run().catch(err => {
+              console.error("Failed:", err);
+              process.exit(1);
+            });
+          '
