@@ -16,6 +16,8 @@ conversationsRouter.get('/', requireAuth, (req: AuthenticatedRequest, res) => {
         c.type,
         c.name,
         c.avatar_url,
+        c.pinned_message_id,
+        c.is_saved,
         c.updated_at,
         c.created_at
       FROM conversations c
@@ -35,7 +37,7 @@ conversationsRouter.get('/', requireAuth, (req: AuthenticatedRequest, res) => {
 
       // Get last message
       const lastMessage = db.prepare(`
-        SELECT m.id, m.sender_id, m.text, m.type, m.file_name, m.created_at, m.is_deleted, u.display_name as sender_name
+        SELECT m.id, m.sender_id, m.text, m.type, m.file_name, m.voice_duration, m.created_at, m.is_deleted, u.display_name as sender_name
         FROM messages m
         JOIN users u ON u.id = m.sender_id
         WHERE m.conversation_id = ?
@@ -47,11 +49,38 @@ conversationsRouter.get('/', requireAuth, (req: AuthenticatedRequest, res) => {
       let chatAvatar = conv.avatar_url;
       let partner: any = null;
 
-      if (conv.type === 'direct') {
+      if (conv.is_saved === 1) {
+        chatName = 'Избранное';
+        chatAvatar = 'https://api.dicebear.com/7.x/bottts/svg?seed=saved_messages_star';
+      } else if (conv.type === 'direct') {
         partner = members.find((m) => m.id !== currentUserId) || members[0];
         if (partner) {
           chatName = partner.display_name;
           chatAvatar = partner.avatar_url;
+        }
+      }
+
+      // Fetch pinned message if any
+      let pinnedMessage: any = null;
+      if (conv.pinned_message_id) {
+        const pm = db.prepare(`
+          SELECT m.id, m.sender_id, m.text, m.type, m.file_name, m.file_url, m.voice_duration, m.created_at, u.display_name as sender_name
+          FROM messages m
+          JOIN users u ON u.id = m.sender_id
+          WHERE m.id = ? AND m.is_deleted = 0
+        `).get(conv.pinned_message_id) as any;
+        if (pm) {
+          pinnedMessage = {
+            id: pm.id,
+            senderId: pm.sender_id,
+            senderName: pm.sender_name,
+            text: pm.text,
+            type: pm.type,
+            fileName: pm.file_name,
+            fileUrl: pm.file_url,
+            voiceDuration: pm.voice_duration,
+            createdAt: pm.created_at,
+          };
         }
       }
 
@@ -62,6 +91,9 @@ conversationsRouter.get('/', requireAuth, (req: AuthenticatedRequest, res) => {
         avatarUrl: chatAvatar,
         partner,
         members,
+        pinnedMessageId: conv.pinned_message_id || null,
+        pinnedMessage,
+        isSaved: Boolean(conv.is_saved),
         lastMessage: lastMessage
           ? {
               id: lastMessage.id,
@@ -212,6 +244,7 @@ conversationsRouter.get('/:id/messages', requireAuth, (req: AuthenticatedRequest
         m.file_url,
         m.file_name,
         m.file_size,
+        m.voice_duration,
         m.reply_to_id,
         m.is_deleted,
         m.created_at,
@@ -268,7 +301,7 @@ conversationsRouter.get('/:id/messages', requireAuth, (req: AuthenticatedRequest
     if (replyIds.length > 0) {
       const placeholders = replyIds.map(() => '?').join(',');
       const replies = db.prepare(`
-        SELECT m.id, m.text, m.type, m.file_name, u.display_name as sender_name
+        SELECT m.id, m.text, m.type, m.file_name, m.voice_duration, u.display_name as sender_name
         FROM messages m
         JOIN users u ON u.id = m.sender_id
         WHERE m.id IN (${placeholders})
@@ -281,6 +314,7 @@ conversationsRouter.get('/:id/messages', requireAuth, (req: AuthenticatedRequest
           text: r.text,
           type: r.type,
           fileName: r.file_name,
+          voiceDuration: r.voice_duration,
         };
       }
     }
@@ -297,6 +331,7 @@ conversationsRouter.get('/:id/messages', requireAuth, (req: AuthenticatedRequest
       fileUrl: m.file_url,
       fileName: m.file_name,
       fileSize: m.file_size,
+      voiceDuration: m.voice_duration,
       replyTo: m.reply_to_id ? replyMap[m.reply_to_id] || null : null,
       replyToId: m.reply_to_id,
       isDeleted: Boolean(m.is_deleted),
@@ -309,5 +344,149 @@ conversationsRouter.get('/:id/messages', requireAuth, (req: AuthenticatedRequest
   } catch (err) {
     console.error('Fetch messages error:', err);
     res.status(500).json({ error: 'Failed to fetch messages' });
+  }
+});
+
+// Create or get "Saved Messages" ("Избранное")
+conversationsRouter.post('/saved', requireAuth, (req: AuthenticatedRequest, res) => {
+  const currentUserId = req.user!.userId;
+
+  try {
+    const existing = db.prepare(`
+      SELECT id FROM conversations WHERE created_by = ? AND is_saved = 1 LIMIT 1
+    `).get(currentUserId) as any;
+
+    if (existing) {
+      return res.json({ id: existing.id, isNew: false });
+    }
+
+    const convId = crypto.randomUUID();
+    const now = new Date().toISOString();
+
+    const createSaved = db.transaction(() => {
+      db.prepare(`
+        INSERT INTO conversations (id, type, name, avatar_url, created_by, is_saved, created_at, updated_at)
+        VALUES (?, 'direct', 'Избранное', 'https://api.dicebear.com/7.x/bottts/svg?seed=saved_messages_star', ?, 1, ?, ?)
+      `).run(convId, currentUserId, now, now);
+
+      db.prepare(`
+        INSERT INTO conversation_members (conversation_id, user_id, role)
+        VALUES (?, ?, 'owner')
+      `).run(convId, currentUserId);
+    });
+
+    createSaved();
+    res.json({ id: convId, isNew: true });
+  } catch (err) {
+    console.error('Create saved messages error:', err);
+    res.status(500).json({ error: 'Failed to get or create saved messages' });
+  }
+});
+
+// Pin or unpin a message
+conversationsRouter.post('/:id/pin', requireAuth, (req: AuthenticatedRequest, res) => {
+  const currentUserId = req.user!.userId;
+  const convId = req.params.id;
+  const { messageId } = req.body; // null to unpin
+
+  try {
+    const isMember = db.prepare(`
+      SELECT 1 FROM conversation_members WHERE conversation_id = ? AND user_id = ?
+    `).get(convId, currentUserId);
+
+    if (!isMember) {
+      return res.status(403).json({ error: 'Not a member of this conversation' });
+    }
+
+    db.prepare(`
+      UPDATE conversations SET pinned_message_id = ? WHERE id = ?
+    `).run(messageId || null, convId);
+
+    let pinnedMessage: any = null;
+    if (messageId) {
+      const pm = db.prepare(`
+        SELECT m.id, m.sender_id, m.text, m.type, m.file_name, m.file_url, m.voice_duration, m.created_at, u.display_name as sender_name
+        FROM messages m
+        JOIN users u ON u.id = m.sender_id
+        WHERE m.id = ? AND m.is_deleted = 0
+      `).get(messageId) as any;
+
+      if (pm) {
+        pinnedMessage = {
+          id: pm.id,
+          senderId: pm.sender_id,
+          senderName: pm.sender_name,
+          text: pm.text,
+          type: pm.type,
+          fileName: pm.file_name,
+          fileUrl: pm.file_url,
+          voiceDuration: pm.voice_duration,
+          createdAt: pm.created_at,
+        };
+      }
+    }
+
+    res.json({ success: true, pinnedMessageId: messageId || null, pinnedMessage });
+  } catch (err) {
+    console.error('Pin message error:', err);
+    res.status(500).json({ error: 'Failed to pin message' });
+  }
+});
+
+// Search messages in a conversation
+conversationsRouter.get('/:id/search', requireAuth, (req: AuthenticatedRequest, res) => {
+  const currentUserId = req.user!.userId;
+  const convId = req.params.id;
+  const query = ((req.query.q as string) || '').trim();
+
+  if (!query) {
+    return res.json([]);
+  }
+
+  try {
+    const isMember = db.prepare(`
+      SELECT 1 FROM conversation_members WHERE conversation_id = ? AND user_id = ?
+    `).get(convId, currentUserId);
+
+    if (!isMember) {
+      return res.status(403).json({ error: 'Not a member of this conversation' });
+    }
+
+    const messages = db.prepare(`
+      SELECT 
+        m.id,
+        m.conversation_id,
+        m.sender_id,
+        m.text,
+        m.type,
+        m.file_name,
+        m.file_url,
+        m.voice_duration,
+        m.created_at,
+        u.display_name as sender_name,
+        u.avatar_url as sender_avatar
+      FROM messages m
+      JOIN users u ON u.id = m.sender_id
+      WHERE m.conversation_id = ? AND m.is_deleted = 0 AND (m.text LIKE ? OR m.file_name LIKE ?)
+      ORDER BY m.created_at DESC
+      LIMIT 30
+    `).all(convId, `%${query}%`, `%${query}%`) as any[];
+
+    res.json(messages.map((m) => ({
+      id: m.id,
+      conversationId: m.conversation_id,
+      senderId: m.sender_id,
+      senderName: m.sender_name,
+      senderAvatar: m.sender_avatar,
+      text: m.text,
+      type: m.type,
+      fileName: m.file_name,
+      fileUrl: m.file_url,
+      voiceDuration: m.voice_duration,
+      createdAt: m.created_at,
+    })));
+  } catch (err) {
+    console.error('Search messages error:', err);
+    res.status(500).json({ error: 'Failed to search messages' });
   }
 });

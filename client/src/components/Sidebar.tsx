@@ -11,6 +11,8 @@ import {
   MessageCircle,
   Image as ImageIcon,
   FileText,
+  Bookmark,
+  Mic,
 } from 'lucide-react';
 
 interface SidebarProps {
@@ -29,6 +31,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     conversations,
     activeConversationId,
     selectConversation,
+    openSavedMessages,
     onlineUserIds,
     logout,
   } = useChat();
@@ -159,6 +162,22 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
       {/* Conversations List */}
       <div className="flex-1 overflow-y-auto px-2 space-y-1">
+        {/* Quick Saved Messages button */}
+        <div
+          onClick={openSavedMessages}
+          className="p-2.5 rounded-2xl flex items-center gap-3 cursor-pointer transition-all hover:bg-slate-800/60 text-slate-300 border border-indigo-500/10 mb-2 bg-indigo-500/5 group"
+        >
+          <div className="w-12 h-12 rounded-full bg-gradient-to-tr from-amber-500 to-indigo-600 flex items-center justify-center text-white shrink-0 shadow-md group-hover:scale-105 transition-transform">
+            <Bookmark className="w-5 h-5 fill-current" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center justify-between">
+              <span className="text-sm font-semibold text-white">Избранное</span>
+            </div>
+            <p className="text-[11px] text-slate-400 truncate">Ваши заметки и файлы</p>
+          </div>
+        </div>
+
         {filteredConversations.length > 0 ? (
           filteredConversations.map((conv) => {
             const isActive = conv.id === activeConversationId;
@@ -239,6 +258,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
                         ) : conv.lastMessage.type === 'file' ? (
                           <span className="flex items-center gap-1">
                             <FileText className="w-3.5 h-3.5" /> Файл
+                          </span>
+                        ) : conv.lastMessage.type === 'voice' ? (
+                          <span className="flex items-center gap-1 text-indigo-400">
+                            <Mic className="w-3.5 h-3.5" /> Голосовое
                           </span>
                         ) : (
                           <span>{conv.lastMessage.text}</span>

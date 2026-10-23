@@ -39,6 +39,8 @@ export function initDatabase() {
       name TEXT,
       avatar_url TEXT,
       created_by TEXT,
+      pinned_message_id TEXT,
+      is_saved INTEGER DEFAULT 0,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
@@ -59,10 +61,11 @@ export function initDatabase() {
       conversation_id TEXT NOT NULL,
       sender_id TEXT NOT NULL,
       text TEXT NOT NULL,
-      type TEXT DEFAULT 'text' CHECK(type IN ('text', 'image', 'file')),
+      type TEXT DEFAULT 'text' CHECK(type IN ('text', 'image', 'file', 'voice')),
       file_url TEXT,
       file_name TEXT,
       file_size INTEGER,
+      voice_duration REAL,
       reply_to_id TEXT,
       is_deleted INTEGER DEFAULT 0,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -94,4 +97,49 @@ export function initDatabase() {
   try {
     db.exec(`ALTER TABLE users ADD COLUMN provider_id TEXT;`);
   } catch {}
+  try {
+    db.exec(`ALTER TABLE conversations ADD COLUMN pinned_message_id TEXT;`);
+  } catch {}
+  try {
+    db.exec(`ALTER TABLE conversations ADD COLUMN is_saved INTEGER DEFAULT 0;`);
+  } catch {}
+  try {
+    db.exec(`ALTER TABLE messages ADD COLUMN voice_duration REAL;`);
+  } catch {}
+
+  // Migrate messages table check constraint if needed
+  try {
+    const tableSql = (db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='messages'").get() as any)?.sql || '';
+    if (tableSql && !tableSql.includes("'voice'")) {
+      db.exec(`
+        PRAGMA foreign_keys=OFF;
+        CREATE TABLE messages_migration (
+          id TEXT PRIMARY KEY,
+          conversation_id TEXT NOT NULL,
+          sender_id TEXT NOT NULL,
+          text TEXT NOT NULL,
+          type TEXT DEFAULT 'text' CHECK(type IN ('text', 'image', 'file', 'voice')),
+          file_url TEXT,
+          file_name TEXT,
+          file_size INTEGER,
+          voice_duration REAL,
+          reply_to_id TEXT,
+          is_deleted INTEGER DEFAULT 0,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE,
+          FOREIGN KEY (sender_id) REFERENCES users(id) ON DELETE CASCADE,
+          FOREIGN KEY (reply_to_id) REFERENCES messages(id) ON DELETE SET NULL
+        );
+        INSERT INTO messages_migration (id, conversation_id, sender_id, text, type, file_url, file_name, file_size, reply_to_id, is_deleted, created_at, updated_at)
+          SELECT id, conversation_id, sender_id, text, type, file_url, file_name, file_size, reply_to_id, is_deleted, created_at, updated_at FROM messages;
+        DROP TABLE messages;
+        ALTER TABLE messages_migration RENAME TO messages;
+        CREATE INDEX IF NOT EXISTS idx_messages_conv ON messages(conversation_id, created_at);
+        PRAGMA foreign_keys=ON;
+      `);
+    }
+  } catch (err) {
+    console.error('Migration error:', err);
+  }
 }

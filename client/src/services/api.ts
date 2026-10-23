@@ -127,9 +127,10 @@ export const api = {
   },
 
   // File Upload
-  async uploadFile(file: File): Promise<{ url: string; fileName: string; fileSize: number; mimeType: string; type: 'image' | 'file' }> {
+  async uploadFile(file: File | Blob, customName?: string): Promise<{ url: string; fileName: string; fileSize: number; mimeType: string; type: 'image' | 'file' }> {
     const formData = new FormData();
-    formData.append('file', file);
+    const finalFile = file instanceof File ? file : new File([file], customName || 'voice_message.webm', { type: file.type });
+    formData.append('file', finalFile);
 
     const token = localStorage.getItem('token');
     const res = await fetch(`${API_BASE}/upload`, {
@@ -138,6 +139,35 @@ export const api = {
       body: formData,
     });
     if (!res.ok) throw new Error('Ошибка загрузки файла');
+    return res.json();
+  },
+
+  // Saved messages & Pinned
+  async getOrCreateSavedMessages(): Promise<{ id: string }> {
+    const res = await fetch(`${API_BASE}/conversations/saved`, {
+      method: 'POST',
+      headers: getAuthHeaders(),
+    });
+    if (!res.ok) throw new Error('Не удалось открыть избранное');
+    return res.json();
+  },
+
+  async pinMessage(conversationId: string, messageId: string | null): Promise<any> {
+    const res = await fetch(`${API_BASE}/conversations/${conversationId}/pin`, {
+      method: 'POST',
+      headers: getAuthHeaders(),
+      body: JSON.stringify({ messageId }),
+    });
+    if (!res.ok) throw new Error('Не удалось закрепить сообщение');
+    return res.json();
+  },
+
+  async searchMessages(conversationId: string, query: string): Promise<Message[]> {
+    if (!query.trim()) return [];
+    const res = await fetch(`${API_BASE}/conversations/${conversationId}/search?q=${encodeURIComponent(query.trim())}`, {
+      headers: getAuthHeaders(),
+    });
+    if (!res.ok) return [];
     return res.json();
   },
 

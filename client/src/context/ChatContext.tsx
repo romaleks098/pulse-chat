@@ -2,6 +2,8 @@ import React, { createContext, useContext, useState, useEffect, useCallback, use
 import type { User, Conversation, Message } from '../types';
 import { api } from '../services/api';
 import { socketService } from '../services/socket';
+import { soundService } from '../services/sound';
+import { notificationService } from '../services/notifications';
 
 interface ChatContextType {
   currentUser: User | null;
@@ -21,12 +23,15 @@ interface ChatContextType {
   selectConversation: (id: string | null) => void;
   sendMessage: (data: {
     text: string;
-    type?: 'text' | 'image' | 'file';
+    type?: 'text' | 'image' | 'file' | 'voice';
     fileUrl?: string;
     fileName?: string;
     fileSize?: number;
+    voiceDuration?: number;
     replyToId?: string;
   }) => void;
+  pinMessage: (messageId: string | null) => Promise<void>;
+  openSavedMessages: () => Promise<void>;
   startTyping: () => void;
   stopTyping: () => void;
   toggleReaction: (messageId: string, emoji: string) => void;
@@ -130,6 +135,19 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     // Handle incoming new message
     const unsubNewMessage = socketService.onMessageNew((newMsg) => {
+      // Sound and notifications for other users' messages
+      if (currentUser && newMsg.senderId !== currentUser.id) {
+        soundService.playMessageReceived();
+        notificationService.show(
+          newMsg.senderName,
+          newMsg.type === 'voice' ? '🎤 Голосовое сообщение' : (newMsg.text || 'Вложение'),
+          newMsg.senderAvatar,
+          () => {
+            setActiveConversationId(newMsg.conversationId);
+          }
+        );
+      }
+
       setMessages((prev) => {
         if (newMsg.conversationId === activeConversationId) {
           // Avoid duplicate
@@ -169,6 +187,13 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
         // Sort by updatedAt descending
         return updated.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
       });
+    });
+
+    // Handle pin update
+    const unsubPinned = socketService.onConversationPinned(({ conversationId, pinnedMessageId, pinnedMessage }) => {
+      setConversations((prev) =>
+        prev.map((c) => (c.id === conversationId ? { ...c, pinnedMessageId, pinnedMessage } : c))
+      );
     });
 
     // Handle reactions update
@@ -212,12 +237,20 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
       unsubOnlineList();
       unsubUserStatus();
       unsubNewMessage();
+      unsubPinned();
       unsubReactions();
       unsubEdit();
       unsubDelete();
       unsubTyping();
     };
   }, [currentUser, token, activeConversationId, refreshConversations]);
+
+  // Request notification permission once
+  useEffect(() => {
+    if (currentUser) {
+      notificationService.requestPermission();
+    }
+  }, [currentUser]);
 
   // Load messages when active conversation changes
   useEffect(() => {
@@ -285,10 +318,11 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const sendMessage = (data: {
     text: string;
-    type?: 'text' | 'image' | 'file';
+    type?: 'text' | 'image' | 'file' | 'voice';
     fileUrl?: string;
     fileName?: string;
     fileSize?: number;
+    voiceDuration?: number;
     replyToId?: string;
   }) => {
     if (!activeConversationId) return;
@@ -296,7 +330,28 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
       conversationId: activeConversationId,
       ...data,
     });
+    soundService.playMessageSent();
     stopTyping();
+  };
+
+  const pinMessage = async (messageId: string | null) => {
+    if (!activeConversationId) return;
+    try {
+      await api.pinMessage(activeConversationId, messageId);
+      socketService.pinMessage(activeConversationId, messageId);
+    } catch (err) {
+      console.error('Failed to pin message:', err);
+    }
+  };
+
+  const openSavedMessages = async () => {
+    try {
+      const res = await api.getOrCreateSavedMessages();
+      await refreshConversations();
+      setActiveConversationId(res.id);
+    } catch (err) {
+      console.error('Failed to open saved messages:', err);
+    }
   };
 
   const startTyping = () => {
@@ -374,6 +429,8 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
         updateProfile,
         selectConversation,
         sendMessage,
+        pinMessage,
+        openSavedMessages,
         startTyping,
         stopTyping,
         toggleReaction,

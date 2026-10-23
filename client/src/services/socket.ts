@@ -49,13 +49,23 @@ export const socketService = {
   sendMessage(data: {
     conversationId: string;
     text: string;
-    type?: 'text' | 'image' | 'file';
+    type?: 'text' | 'image' | 'file' | 'voice';
     fileUrl?: string;
     fileName?: string;
     fileSize?: number;
+    voiceDuration?: number;
     replyToId?: string;
   }) {
     socket?.emit('message:send', data);
+  },
+
+  pinMessage(conversationId: string, messageId: string | null) {
+    socket?.emit('conversation:pin', { conversationId, messageId });
+  },
+
+  onConversationPinned(callback: (data: { conversationId: string; pinnedMessageId: string | null; pinnedMessage: Message | null }) => void) {
+    socket?.on('conversation:pinned', callback);
+    return () => socket?.off('conversation:pinned', callback);
   },
 
   startTyping(conversationId: string) {

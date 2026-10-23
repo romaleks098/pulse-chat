@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
 import { socketService } from '../services/socket';
+import { soundService } from '../services/sound';
 
 type CallState = 'idle' | 'calling' | 'incoming' | 'connected';
 
@@ -18,6 +19,7 @@ interface CallContextType {
   remoteStream: MediaStream | null;
   isMuted: boolean;
   isVideoOff: boolean;
+  isScreenSharing: boolean;
   callDuration: number;
   startCall: (conversationId: string, isVideo: boolean) => Promise<void>;
   acceptCall: () => Promise<void>;
@@ -25,6 +27,7 @@ interface CallContextType {
   endCall: () => void;
   toggleMute: () => void;
   toggleVideo: () => void;
+  toggleScreenShare: () => Promise<void>;
 }
 
 const CallContext = createContext<CallContextType | undefined>(undefined);
@@ -45,17 +48,27 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
   const [isMuted, setIsMuted] = useState<boolean>(false);
   const [isVideoOff, setIsVideoOff] = useState<boolean>(false);
+  const [isScreenSharing, setIsScreenSharing] = useState<boolean>(false);
   const [callDuration, setCallDuration] = useState<number>(0);
 
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
+  const screenStreamRef = useRef<MediaStream | null>(null);
+  const cameraVideoTrackRef = useRef<MediaStreamTrack | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Clean up WebRTC peer connection and streams
   const cleanup = useCallback(() => {
+    soundService.stopIncomingCallRingtone();
+
     if (timerRef.current) {
       clearInterval(timerRef.current);
       timerRef.current = null;
+    }
+
+    if (screenStreamRef.current) {
+      screenStreamRef.current.getTracks().forEach((track) => track.stop());
+      screenStreamRef.current = null;
     }
 
     if (localStreamRef.current) {
@@ -68,6 +81,7 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
       pcRef.current = null;
     }
 
+    cameraVideoTrackRef.current = null;
     setLocalStream(null);
     setRemoteStream(null);
     setCallState('idle');
@@ -75,6 +89,7 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setActiveConversationId(null);
     setIsMuted(false);
     setIsVideoOff(false);
+    setIsScreenSharing(false);
     setCallDuration(0);
   }, []);
 
@@ -100,6 +115,8 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (event.streams && event.streams[0]) {
         setRemoteStream(event.streams[0]);
         setCallState('connected');
+        soundService.stopIncomingCallRingtone();
+        soundService.playCallConnected();
 
         // Start call duration timer
         if (!timerRef.current) {
@@ -131,6 +148,7 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
         avatar: data.callerAvatar,
       });
       setCallState('incoming');
+      soundService.startIncomingCallRingtone();
     });
 
     // 2. Call Accepted (Caller receives this)
@@ -163,11 +181,15 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     // 3. Call Rejected
     const unsubRejected = socketService.onCallRejected(() => {
+      soundService.stopIncomingCallRingtone();
+      soundService.playCallEnded();
       cleanup();
     });
 
     // 4. Call Ended
     const unsubEnded = socketService.onCallEnded(() => {
+      soundService.stopIncomingCallRingtone();
+      soundService.playCallEnded();
       cleanup();
     });
 
@@ -245,6 +267,8 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const acceptCall = async () => {
     if (!activeConversationId) return;
 
+    soundService.stopIncomingCallRingtone();
+
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: true,
@@ -265,6 +289,7 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   // Reject incoming call
   const rejectCall = () => {
+    soundService.stopIncomingCallRingtone();
     if (activeConversationId) {
       socketService.rejectCall(activeConversationId);
     }
@@ -273,6 +298,8 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   // End active call
   const endCall = () => {
+    soundService.stopIncomingCallRingtone();
+    soundService.playCallEnded();
     if (activeConversationId) {
       socketService.endCall(activeConversationId);
     }
@@ -301,6 +328,61 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
+  // Toggle Screen Sharing
+  const toggleScreenShare = async () => {
+    if (isScreenSharing) {
+      // Stop screen share and switch back to camera
+      if (screenStreamRef.current) {
+        screenStreamRef.current.getTracks().forEach((t) => t.stop());
+        screenStreamRef.current = null;
+      }
+
+      if (cameraVideoTrackRef.current && pcRef.current) {
+        const sender = pcRef.current.getSenders().find((s) => s.track?.kind === 'video');
+        if (sender) {
+          await sender.replaceTrack(cameraVideoTrackRef.current);
+        }
+      }
+      setIsScreenSharing(false);
+    } else {
+      try {
+        const screenStream = await navigator.mediaDevices.getDisplayMedia({
+          video: { cursor: 'always' } as any,
+          audio: false,
+        });
+
+        screenStreamRef.current = screenStream;
+        const screenTrack = screenStream.getVideoTracks()[0];
+
+        // Listen for user ending share from native browser floating bar
+        screenTrack.onended = () => {
+          toggleScreenShare();
+        };
+
+        // Cache camera track
+        if (localStreamRef.current) {
+          const camTrack = localStreamRef.current.getVideoTracks()[0];
+          if (camTrack) {
+            cameraVideoTrackRef.current = camTrack;
+          }
+        }
+
+        if (pcRef.current) {
+          const sender = pcRef.current.getSenders().find((s) => s.track?.kind === 'video');
+          if (sender) {
+            await sender.replaceTrack(screenTrack);
+          } else if (localStreamRef.current) {
+            pcRef.current.addTrack(screenTrack, localStreamRef.current);
+          }
+        }
+
+        setIsScreenSharing(true);
+      } catch (err) {
+        console.log('Screen sharing cancelled:', err);
+      }
+    }
+  };
+
   return (
     <CallContext.Provider
       value={{
@@ -312,6 +394,7 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
         remoteStream,
         isMuted,
         isVideoOff,
+        isScreenSharing,
         callDuration,
         startCall,
         acceptCall,
@@ -319,6 +402,7 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
         endCall,
         toggleMute,
         toggleVideo,
+        toggleScreenShare,
       }}
     >
       {children}

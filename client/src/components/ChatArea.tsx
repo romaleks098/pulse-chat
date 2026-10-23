@@ -4,6 +4,9 @@ import { useCall } from '../context/CallContext';
 import type { Message, ReplyInfo } from '../types';
 import { formatMessageTime, formatFileSize } from '../utils/format';
 import { api } from '../services/api';
+import { VoiceMessagePlayer } from './VoiceMessagePlayer';
+import { VoiceRecorder } from './VoiceRecorder';
+import { PinnedMessageBanner } from './PinnedMessageBanner';
 import {
   ArrowLeft,
   Send,
@@ -20,6 +23,10 @@ import {
   Check,
   Phone,
   Video,
+  Pin,
+  Search,
+  ChevronUp,
+  ChevronDown,
 } from 'lucide-react';
 
 const POPULAR_EMOJIS = ['👍', '❤️', '🔥', '😂', '😮', '😢', '👏', '🎉'];
@@ -41,6 +48,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
     messages,
     loadingMessages,
     sendMessage,
+    pinMessage,
     startTyping,
     stopTyping,
     typingUsers,
@@ -59,9 +67,43 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   const [activeReactionMenuMsgId, setActiveReactionMenuMsgId] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
 
+  // Search state
+  const [showSearch, setShowSearch] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<Message[]>([]);
+  const [currentMatchIdx, setCurrentMatchIdx] = useState(0);
+
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+
+  useEffect(() => {
+    if (!showSearch || !searchQuery.trim() || !activeConversation) {
+      setSearchResults([]);
+      return;
+    }
+    const timer = setTimeout(() => {
+      api.searchMessages(activeConversation.id, searchQuery).then((res) => {
+        setSearchResults(res);
+        setCurrentMatchIdx(0);
+        if (res.length > 0) {
+          jumpToMessage(res[0].id);
+        }
+      });
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [searchQuery, showSearch, activeConversation?.id]);
+
+  const jumpToMessage = (messageId: string) => {
+    const el = document.getElementById(`msg-${messageId}`);
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      el.classList.add('ring-2', 'ring-indigo-400');
+      setTimeout(() => {
+        el.classList.remove('ring-2', 'ring-indigo-400');
+      }, 2000);
+    }
+  };
 
   // Auto scroll to bottom
   const scrollToBottom = (behavior: ScrollBehavior = 'smooth') => {
@@ -220,6 +262,16 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
         {/* Right action button */}
         <div className="flex items-center gap-1">
           <button
+            onClick={() => setShowSearch((prev) => !prev)}
+            title="Поиск сообщений в чате"
+            className={`p-2 rounded-xl transition-colors cursor-pointer ${
+              showSearch ? 'bg-indigo-600 text-white' : 'text-slate-300 hover:text-white hover:bg-slate-800'
+            }`}
+          >
+            <Search className="w-4 h-4" />
+          </button>
+
+          <button
             onClick={() => startCall(activeConversation.id, false)}
             title="Аудиозвонок"
             className="p-2 text-slate-300 hover:text-white hover:bg-slate-800 rounded-xl transition-colors cursor-pointer"
@@ -246,6 +298,67 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
         </div>
       </header>
 
+      {/* Inline Message Search Bar */}
+      {showSearch && (
+        <div className="p-2.5 bg-slate-900 border-b border-slate-800 flex items-center gap-2 z-20">
+          <div className="relative flex-1">
+            <Search className="w-4 h-4 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
+            <input
+              type="text"
+              autoFocus
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Поиск по переписке..."
+              className="w-full pl-9 pr-3 py-1.5 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500"
+            />
+          </div>
+
+          {searchResults.length > 0 && (
+            <div className="flex items-center gap-1 text-xs text-slate-400 shrink-0">
+              <span>{currentMatchIdx + 1} из {searchResults.length}</span>
+              <button
+                onClick={() => {
+                  const nextIdx = (currentMatchIdx - 1 + searchResults.length) % searchResults.length;
+                  setCurrentMatchIdx(nextIdx);
+                  jumpToMessage(searchResults[nextIdx].id);
+                }}
+                className="p-1 hover:text-white rounded hover:bg-slate-800 cursor-pointer"
+              >
+                <ChevronUp className="w-4 h-4" />
+              </button>
+              <button
+                onClick={() => {
+                  const nextIdx = (currentMatchIdx + 1) % searchResults.length;
+                  setCurrentMatchIdx(nextIdx);
+                  jumpToMessage(searchResults[nextIdx].id);
+                }}
+                className="p-1 hover:text-white rounded hover:bg-slate-800 cursor-pointer"
+              >
+                <ChevronDown className="w-4 h-4" />
+              </button>
+            </div>
+          )}
+
+          <button
+            onClick={() => {
+              setShowSearch(false);
+              setSearchQuery('');
+              setSearchResults([]);
+            }}
+            className="p-1 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 cursor-pointer"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
+      {/* Pinned Message Banner */}
+      <PinnedMessageBanner
+        pinnedMessage={activeConversation.pinnedMessage || null}
+        onJumpToMessage={jumpToMessage}
+        onUnpin={() => pinMessage(null)}
+      />
+
       {/* Messages Feed */}
       <div className="flex-1 overflow-y-auto p-4 space-y-3">
         {loadingMessages ? (
@@ -265,7 +378,8 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
             return (
               <div
                 key={msg.id}
-                className={`flex gap-2.5 group relative ${isMe ? 'justify-end' : 'justify-start'}`}
+                id={`msg-${msg.id}`}
+                className={`flex gap-2.5 group relative transition-all duration-300 rounded-2xl ${isMe ? 'justify-end' : 'justify-start'}`}
               >
                 {!isMe && (
                   <img
@@ -347,6 +461,13 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                     </div>
                   )}
 
+                  {/* Voice Message Content */}
+                  {msg.type === 'voice' && msg.fileUrl && (
+                    <div className="mb-1">
+                      <VoiceMessagePlayer audioUrl={msg.fileUrl} duration={msg.voiceDuration} isOwn={isMe} />
+                    </div>
+                  )}
+
                   {/* Text Content */}
                   {msg.isDeleted ? (
                     <p className="italic opacity-60 text-xs">Сообщение удалено</p>
@@ -404,7 +525,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                   {!msg.isDeleted && (
                     <div
                       className={`absolute top-1 hidden group-hover:flex items-center gap-1 p-1 bg-slate-900 border border-slate-800 rounded-xl shadow-lg z-10 ${
-                        isMe ? '-left-28' : '-right-28'
+                        isMe ? '-left-36' : '-right-36'
                       }`}
                     >
                       <button
@@ -418,9 +539,22 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                           })
                         }
                         title="Ответить"
-                        className="p-1 text-slate-400 hover:text-white rounded hover:bg-slate-800"
+                        className="p-1 text-slate-400 hover:text-white rounded hover:bg-slate-800 cursor-pointer"
                       >
                         <Reply className="w-3.5 h-3.5" />
+                      </button>
+
+                      {/* Pin Button */}
+                      <button
+                        onClick={() => pinMessage(activeConversation.pinnedMessageId === msg.id ? null : msg.id)}
+                        title={activeConversation.pinnedMessageId === msg.id ? 'Открепить' : 'Закрепить'}
+                        className={`p-1 rounded hover:bg-slate-800 cursor-pointer ${
+                          activeConversation.pinnedMessageId === msg.id
+                            ? 'text-indigo-400 bg-indigo-500/20'
+                            : 'text-slate-400 hover:text-white'
+                        }`}
+                      >
+                        <Pin className="w-3.5 h-3.5 rotate-45" />
                       </button>
 
                       {/* Quick reaction popover toggle */}
@@ -431,7 +565,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                           )
                         }
                         title="Реакция"
-                        className="p-1 text-slate-400 hover:text-white rounded hover:bg-slate-800"
+                        className="p-1 text-slate-400 hover:text-white rounded hover:bg-slate-800 cursor-pointer"
                       >
                         <Smile className="w-3.5 h-3.5" />
                       </button>
@@ -440,7 +574,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                         <button
                           onClick={() => startEdit(msg)}
                           title="Редактировать"
-                          className="p-1 text-slate-400 hover:text-white rounded hover:bg-slate-800"
+                          className="p-1 text-slate-400 hover:text-white rounded hover:bg-slate-800 cursor-pointer"
                         >
                           <Edit2 className="w-3.5 h-3.5" />
                         </button>
@@ -450,7 +584,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                         <button
                           onClick={() => deleteMessage(msg.id)}
                           title="Удалить"
-                          className="p-1 text-slate-400 hover:text-rose-400 rounded hover:bg-slate-800"
+                          className="p-1 text-slate-400 hover:text-rose-400 rounded hover:bg-slate-800 cursor-pointer"
                         >
                           <Trash2 className="w-3.5 h-3.5" />
                         </button>
@@ -605,14 +739,29 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
             />
           </div>
 
-          {/* Send Button */}
-          <button
-            onClick={handleSend}
-            disabled={!inputText.trim()}
-            className="p-2.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl shadow-lg shadow-indigo-600/30 transition-all disabled:opacity-30 disabled:hover:bg-indigo-600 shrink-0"
-          >
-            <Send className="w-5 h-5" />
-          </button>
+          {/* Send Button or Voice Recorder */}
+          {inputText.trim() ? (
+            <button
+              onClick={handleSend}
+              className="p-2.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl shadow-lg shadow-indigo-600/30 transition-all shrink-0 cursor-pointer"
+            >
+              <Send className="w-5 h-5" />
+            </button>
+          ) : (
+            <VoiceRecorder
+              disabled={uploading}
+              onSendVoice={(fileUrl, duration) => {
+                sendMessage({
+                  text: '',
+                  type: 'voice',
+                  fileUrl,
+                  voiceDuration: duration,
+                  replyToId: replyTo?.id,
+                });
+                setReplyTo(null);
+              }}
+            />
+          )}
         </div>
       </footer>
     </main>

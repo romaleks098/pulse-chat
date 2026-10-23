@@ -9,6 +9,8 @@ import {
   Video,
   VideoOff,
   Volume2,
+  Monitor,
+  MonitorOff,
 } from 'lucide-react';
 
 function formatTimer(seconds: number): string {
@@ -26,12 +28,14 @@ export const CallModal: React.FC = () => {
     remoteStream,
     isMuted,
     isVideoOff,
+    isScreenSharing,
     callDuration,
     acceptCall,
     rejectCall,
     endCall,
     toggleMute,
     toggleVideo,
+    toggleScreenShare,
   } = useCall();
 
   const { activeConversation } = useChat();
@@ -215,7 +219,7 @@ export const CallModal: React.FC = () => {
               <button
                 onClick={toggleVideo}
                 title={isVideoOff ? 'Включить видео' : 'Выключить видео'}
-                className={`p-3.5 rounded-full transition-all active:scale-95 ${
+                className={`p-3.5 rounded-full transition-all active:scale-95 cursor-pointer ${
                   isVideoOff
                     ? 'bg-rose-500/20 text-rose-400 border border-rose-500/40'
                     : 'bg-slate-800 hover:bg-slate-700 text-white'
@@ -224,6 +228,19 @@ export const CallModal: React.FC = () => {
                 {isVideoOff ? <VideoOff className="w-5 h-5" /> : <Video className="w-5 h-5" />}
               </button>
             )}
+
+            {/* Screen Share Toggle */}
+            <button
+              onClick={toggleScreenShare}
+              title={isScreenSharing ? 'Остановить демонстрацию экрана' : 'Поделиться экраном'}
+              className={`p-3.5 rounded-full transition-all active:scale-95 cursor-pointer ${
+                isScreenSharing
+                  ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/40 animate-pulse'
+                  : 'bg-slate-800 hover:bg-slate-700 text-white'
+              }`}
+            >
+              {isScreenSharing ? <MonitorOff className="w-5 h-5" /> : <Monitor className="w-5 h-5" />}
+            </button>
 
             {/* End Call */}
             <button

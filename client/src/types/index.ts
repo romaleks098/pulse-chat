@@ -18,7 +18,7 @@ export interface ReplyInfo {
   id: string;
   senderName: string;
   text: string;
-  type: 'text' | 'image' | 'file';
+  type: 'text' | 'image' | 'file' | 'voice';
   fileName?: string;
 }
 
@@ -30,10 +30,11 @@ export interface Message {
   senderName: string;
   senderAvatar: string;
   text: string;
-  type: 'text' | 'image' | 'file';
+  type: 'text' | 'image' | 'file' | 'voice';
   fileUrl?: string;
   fileName?: string;
   fileSize?: number;
+  voiceDuration?: number;
   replyTo?: ReplyInfo | null;
   replyToId?: string | null;
   isDeleted: boolean;
@@ -49,12 +50,15 @@ export interface Conversation {
   avatarUrl: string;
   partner?: User | null;
   members: User[];
+  pinnedMessageId?: string | null;
+  pinnedMessage?: Message | null;
+  isSaved?: boolean;
   lastMessage?: {
     id: string;
     senderId: string;
     senderName: string;
     text: string;
-    type: 'text' | 'image' | 'file';
+    type: 'text' | 'image' | 'file' | 'voice';
     fileName?: string;
     createdAt: string;
   } | null;

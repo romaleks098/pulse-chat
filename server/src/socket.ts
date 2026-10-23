@@ -84,13 +84,14 @@ export function setupSocketServer(io: Server) {
     socket.on('message:send', async (data: {
       conversationId: string;
       text: string;
-      type?: 'text' | 'image' | 'file';
+      type?: 'text' | 'image' | 'file' | 'voice';
       fileUrl?: string;
       fileName?: string;
       fileSize?: number;
+      voiceDuration?: number;
       replyToId?: string;
     }) => {
-      const { conversationId, text, type = 'text', fileUrl, fileName, fileSize, replyToId } = data;
+      const { conversationId, text, type = 'text', fileUrl, fileName, fileSize, voiceDuration, replyToId } = data;
 
       try {
         // Verify user is in conversation
@@ -108,9 +109,9 @@ export function setupSocketServer(io: Server) {
         // Save message & update conversation time
         const insertMsg = db.transaction(() => {
           db.prepare(`
-            INSERT INTO messages (id, conversation_id, sender_id, text, type, file_url, file_name, file_size, reply_to_id, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-          `).run(msgId, conversationId, userId, text || '', type, fileUrl || null, fileName || null, fileSize || null, replyToId || null, now, now);
+            INSERT INTO messages (id, conversation_id, sender_id, text, type, file_url, file_name, file_size, voice_duration, reply_to_id, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `).run(msgId, conversationId, userId, text || '', type, fileUrl || null, fileName || null, fileSize || null, voiceDuration || null, replyToId || null, now, now);
 
           db.prepare(`
             UPDATE conversations SET updated_at = ? WHERE id = ?
@@ -128,7 +129,7 @@ export function setupSocketServer(io: Server) {
         let replyTo = null;
         if (replyToId) {
           const rawReply = db.prepare(`
-            SELECT m.id, m.text, m.type, m.file_name, u.display_name as sender_name
+            SELECT m.id, m.text, m.type, m.file_name, m.voice_duration, u.display_name as sender_name
             FROM messages m
             JOIN users u ON u.id = m.sender_id
             WHERE m.id = ?
@@ -141,6 +142,7 @@ export function setupSocketServer(io: Server) {
               text: rawReply.text,
               type: rawReply.type,
               fileName: rawReply.file_name,
+              voiceDuration: rawReply.voice_duration,
             };
           }
         }
@@ -157,6 +159,7 @@ export function setupSocketServer(io: Server) {
           fileUrl,
           fileName,
           fileSize,
+          voiceDuration: voiceDuration || null,
           replyTo,
           replyToId,
           isDeleted: false,
@@ -170,6 +173,45 @@ export function setupSocketServer(io: Server) {
       } catch (err) {
         console.error('Send message error:', err);
         socket.emit('error', { message: 'Failed to send message' });
+      }
+    });
+
+    // Handle pin message in real-time
+    socket.on('conversation:pin', ({ conversationId, messageId }: { conversationId: string; messageId: string | null }) => {
+      try {
+        db.prepare('UPDATE conversations SET pinned_message_id = ? WHERE id = ?').run(messageId || null, conversationId);
+        
+        let pinnedMessage: any = null;
+        if (messageId) {
+          const pm = db.prepare(`
+            SELECT m.id, m.sender_id, m.text, m.type, m.file_name, m.file_url, m.voice_duration, m.created_at, u.display_name as sender_name
+            FROM messages m
+            JOIN users u ON u.id = m.sender_id
+            WHERE m.id = ? AND m.is_deleted = 0
+          `).get(messageId) as any;
+
+          if (pm) {
+            pinnedMessage = {
+              id: pm.id,
+              senderId: pm.sender_id,
+              senderName: pm.sender_name,
+              text: pm.text,
+              type: pm.type,
+              fileName: pm.file_name,
+              fileUrl: pm.file_url,
+              voiceDuration: pm.voice_duration,
+              createdAt: pm.created_at,
+            };
+          }
+        }
+
+        io.to(`conv_${conversationId}`).emit('conversation:pinned', {
+          conversationId,
+          pinnedMessageId: messageId || null,
+          pinnedMessage,
+        });
+      } catch (err) {
+        console.error('Pin socket error:', err);
       }
     });
 
