@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useChat } from '../context/ChatContext';
-import { api } from '../services/api';
-import { MessageSquare, Lock, User as UserIcon, Sparkles, ArrowRight, X, Key } from 'lucide-react';
+import { MessageSquare, Lock, User as UserIcon, Sparkles, ArrowRight } from 'lucide-react';
 
 const AVATAR_PRESETS = [
   'https://api.dicebear.com/7.x/bottts/svg?seed=Felix',
@@ -13,7 +12,7 @@ const AVATAR_PRESETS = [
 ];
 
 export const AuthScreen: React.FC = () => {
-  const { login, register, loginSocial } = useChat();
+  const { login, register } = useChat();
   const [isLogin, setIsLogin] = useState(true);
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -22,23 +21,11 @@ export const AuthScreen: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
-  // Providers config
-  const [providers, setProviders] = useState({ telegramBotName: '', googleClientId: '', githubClientId: '' });
-
-  // Social modal state
-  const [socialModal, setSocialModal] = useState<'telegram' | 'google' | 'github' | null>(null);
-  const [socialInput, setSocialInput] = useState('');
-  const [socialName, setSocialName] = useState('');
-
   useEffect(() => {
-    api.getAuthProviders().then((res) => {
-      setProviders(res);
-    });
-
     const urlParams = new URLSearchParams(window.location.search);
     const oauthError = urlParams.get('oauth_error');
     if (oauthError) {
-      setError(`Ошибка входа через социальную сеть: ${oauthError}`);
+      setError('Ошибка входа через социальную сеть. Попробуйте еще раз.');
     }
   }, []);
 
@@ -66,76 +53,15 @@ export const AuthScreen: React.FC = () => {
   };
 
   const handleGoogleClick = () => {
-    if (providers.googleClientId) {
-      // Real redirect to accounts.google.com in browser!
-      window.location.href = '/api/auth/google';
-    } else {
-      setSocialModal('google');
-      setSocialInput('');
-      setSocialName('');
-    }
+    window.location.href = '/api/auth/google';
   };
 
   const handleGithubClick = () => {
-    if (providers.githubClientId) {
-      // Real redirect to github.com in browser!
-      window.location.href = '/api/auth/github';
-    } else {
-      setSocialModal('github');
-      setSocialInput('');
-      setSocialName('');
-    }
+    window.location.href = '/api/auth/github';
   };
 
   const handleTelegramClick = () => {
-    setSocialModal('telegram');
-    setSocialInput('');
-    setSocialName('');
-  };
-
-  const handleQuickConnect = async (provider: 'telegram' | 'google' | 'github') => {
-    setError(null);
-    setLoading(true);
-
-    try {
-      let payload: any = {};
-      const cleanInput = socialInput.trim().replace(/^@/, '');
-
-      if (provider === 'telegram') {
-        const handle = cleanInput || 'telegram_user';
-        const name = socialName.trim() || handle;
-        payload = {
-          id: `tg_${handle}_${Date.now().toString().slice(-4)}`,
-          username: handle,
-          displayName: name,
-          avatarUrl: `https://api.dicebear.com/7.x/bottts/svg?seed=tg_${handle}`,
-        };
-      } else if (provider === 'google') {
-        const email = cleanInput || 'alex.google@gmail.com';
-        const name = socialName.trim() || email.split('@')[0];
-        payload = {
-          id: `google_${email.replace(/[^a-zA-Z0-9]/g, '_')}`,
-          username: email.split('@')[0],
-          displayName: name,
-          avatarUrl: `https://api.dicebear.com/7.x/identicon/svg?seed=${email}`,
-        };
-      } else if (provider === 'github') {
-        const handle = cleanInput || 'octocat';
-        payload = {
-          id: `gh_${handle}`,
-          username: handle,
-          displayName: socialName.trim() || handle,
-          avatarUrl: `https://github.com/${handle}.png`,
-        };
-      }
-
-      await loginSocial(provider, payload);
-      setSocialModal(null);
-    } catch (err: any) {
-      setError(err.message || 'Ошибка социальной авторизации');
-    } finally {
-      setLoading(false);
-    }
+    window.location.href = '/api/auth/telegram';
   };
 
   return (
@@ -337,118 +263,6 @@ export const AuthScreen: React.FC = () => {
           </p>
         </div>
       </div>
-
-      {/* Social OAuth Configuration & Quick Connect Modal */}
-      {socialModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-200">
-          <div className="w-full max-w-md bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-2xl relative text-white">
-            <button
-              onClick={() => setSocialModal(null)}
-              className="absolute right-4 top-4 p-1.5 text-slate-400 hover:text-white rounded-full hover:bg-slate-800 transition-colors"
-            >
-              <X className="w-5 h-5" />
-            </button>
-
-            <div className="text-center mb-4">
-              <div
-                className={`w-14 h-14 rounded-2xl mx-auto flex items-center justify-center mb-3 shadow-lg ${
-                  socialModal === 'telegram'
-                    ? 'bg-[#229ED9]/20 text-[#229ED9]'
-                    : socialModal === 'google'
-                    ? 'bg-white/10 text-white'
-                    : 'bg-slate-800 text-white'
-                }`}
-              >
-                {socialModal === 'telegram' && (
-                  <svg className="w-7 h-7 fill-current" viewBox="0 0 24 24">
-                    <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm4.64 6.8c-.15 1.58-.8 5.42-1.13 7.19-.14.75-.42 1-.68 1.03-.58.05-1.02-.38-1.58-.75-.88-.58-1.38-.94-2.23-1.5-.99-.65-.35-1.01.22-1.59.15-.15 2.71-2.48 2.76-2.69a.2.2 0 00-.05-.18c-.06-.05-.14-.03-.21-.02-.09.02-1.49.95-4.22 2.79-.4.27-.76.41-1.08.4-.36-.01-1.04-.2-1.55-.37-.63-.2-1.12-.31-1.08-.66.02-.18.27-.36.75-.55 2.92-1.27 4.86-2.11 5.83-2.51 2.78-1.16 3.35-1.36 3.73-1.36.08 0 .27.02.39.12.1.08.13.19.14.27-.01.06.01.24 0 .38z" />
-                  </svg>
-                )}
-                {socialModal === 'google' && (
-                  <svg className="w-7 h-7" viewBox="0 0 24 24">
-                    <path fill="#4285F4" d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v4.51h6.6c-.29 1.52-1.14 2.82-2.4 3.68v3.05h3.88c2.27-2.09 3.665-5.17 3.665-9.17z" />
-                    <path fill="#34A853" d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.88-3.05c-1.08.72-2.45 1.16-4.05 1.16-3.12 0-5.77-2.1-6.72-4.93H1.25v3.15C3.26 21.36 7.33 24 12 24z" />
-                    <path fill="#FBBC05" d="M5.28 14.27c-.25-.72-.38-1.49-.38-2.27s.13-1.55.38-2.27V6.58H1.25C.45 8.18 0 10.04 0 12s.45 3.82 1.25 5.42l4.03-3.15z" />
-                    <path fill="#EA4335" d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.33 0 3.26 2.64 1.25 6.58l4.03 3.15c.95-2.83 3.6-4.98 6.72-4.98z" />
-                  </svg>
-                )}
-                {socialModal === 'github' && (
-                  <svg className="w-7 h-7 fill-current" viewBox="0 0 24 24">
-                    <path fillRule="evenodd" clipRule="evenodd" d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.53 1.032 1.53 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z" />
-                  </svg>
-                )}
-              </div>
-              <h3 className="text-lg font-bold">
-                Вход через {socialModal === 'telegram' ? 'Telegram' : socialModal === 'google' ? 'Google' : 'GitHub'}
-              </h3>
-            </div>
-
-            {/* Why modal appears notice */}
-            <div className="bg-slate-950 p-3.5 rounded-2xl border border-slate-800 text-xs text-slate-300 space-y-2 mb-4">
-              <div className="font-semibold text-indigo-400 flex items-center gap-1.5">
-                <Key className="w-3.5 h-3.5" />
-                <span>Почему нужен Client ID для редиректа в браузер?</span>
-              </div>
-              <p className="text-[11px] text-slate-400 leading-relaxed">
-                {socialModal === 'google' && 'Google запрещает перенаправлять пользователей без зарегистрированного бесплатного Client ID в Google Cloud Console (защита от фишинга).'}
-                {socialModal === 'github' && 'GitHub требует зарегистрировать OAuth App в Developer Settings и указать Client ID и Client Secret.'}
-                {socialModal === 'telegram' && 'Telegram требует создание бота через @BotFather для проверки криптографической подписи.'}
-              </p>
-            </div>
-
-            {/* Quick Login Section */}
-            <div className="space-y-3 mb-4">
-              <div>
-                <label className="block text-[11px] font-semibold text-slate-300 uppercase tracking-wider mb-1">
-                  {socialModal === 'telegram' ? 'Ваш ник в Telegram' : socialModal === 'google' ? 'Ваша почта Google' : 'Ваш логин GitHub'}
-                </label>
-                <input
-                  type="text"
-                  autoFocus
-                  value={socialInput}
-                  onChange={(e) => setSocialInput(e.target.value)}
-                  placeholder={socialModal === 'telegram' ? '@durov' : socialModal === 'google' ? 'alex@gmail.com' : 'octocat'}
-                  className="w-full px-3.5 py-2 bg-slate-950 border border-slate-800 rounded-xl text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 text-sm"
-                />
-              </div>
-
-              <div>
-                <label className="block text-[11px] font-semibold text-slate-300 uppercase tracking-wider mb-1">
-                  Отображаемое имя (необязательно)
-                </label>
-                <input
-                  type="text"
-                  value={socialName}
-                  onChange={(e) => setSocialName(e.target.value)}
-                  placeholder="Имя Фамилия"
-                  className="w-full px-3.5 py-2 bg-slate-950 border border-slate-800 rounded-xl text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 text-sm"
-                />
-              </div>
-            </div>
-
-            <button
-              onClick={() => handleQuickConnect(socialModal)}
-              disabled={loading}
-              className={`w-full py-2.5 rounded-xl font-medium text-sm flex items-center justify-center gap-2 transition-all cursor-pointer ${
-                socialModal === 'telegram'
-                  ? 'bg-[#229ED9] hover:bg-[#1b8fc7] text-white shadow-lg shadow-[#229ED9]/30'
-                  : socialModal === 'google'
-                  ? 'bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg shadow-indigo-600/30'
-                  : 'bg-slate-800 hover:bg-slate-700 text-white'
-              }`}
-            >
-              {loading ? (
-                <div className="w-4 h-4 border-2 border-white/20 border-t-white rounded-full animate-spin" />
-              ) : (
-                <>
-                  <span>Войти в аккаунт</span>
-                  <ArrowRight className="w-4 h-4" />
-                </>
-              )}
-            </button>
-          </div>
-        </div>
-      )}
     </div>
   );
 };
