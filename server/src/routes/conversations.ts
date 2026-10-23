@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import crypto from 'crypto';
-import { db } from '../db.js';
+import { db, healAndConsolidateSavedMessages } from '../db.js';
 import { requireAuth, AuthenticatedRequest } from '../auth.js';
 import { broadcastToConversationMembers } from '../socket.js';
 
@@ -430,6 +430,7 @@ conversationsRouter.post('/saved', requireAuth, async (req: AuthenticatedRequest
       if (!existing.is_saved) {
         await db.run('UPDATE conversations SET is_saved = 1, type = ? WHERE id = ?', 'direct', existing.id);
       }
+      await healAndConsolidateSavedMessages();
       return res.json({ id: existing.id, isNew: false });
     }
 
@@ -732,5 +733,36 @@ conversationsRouter.post('/channel', requireAuth, async (req: AuthenticatedReque
   } catch (err) {
     console.error('Create channel error:', err);
     res.status(500).json({ error: 'Failed to create channel' });
+  }
+});
+
+// Delete conversation
+conversationsRouter.delete('/:id', requireAuth, async (req: AuthenticatedRequest, res) => {
+  const currentUserId = req.user!.userId;
+  const convId = req.params.id;
+
+  try {
+    const isMember = await db.get<any>(`
+      SELECT 1 FROM conversation_members WHERE conversation_id = ? AND user_id = ?
+    `, convId, currentUserId);
+
+    if (!isMember) return res.status(403).json({ error: 'Not allowed' });
+
+    // Remove user membership
+    await db.run(`DELETE FROM conversation_members WHERE conversation_id = ? AND user_id = ?`, convId, currentUserId);
+
+    // Check remaining members
+    const remaining = await db.get<{ cnt: number | string }>(`
+      SELECT COUNT(*) as cnt FROM conversation_members WHERE conversation_id = ?
+    `, convId);
+
+    if (Number(remaining?.cnt || 0) === 0) {
+      await db.run(`DELETE FROM messages WHERE conversation_id = ?`, convId);
+      await db.run(`DELETE FROM conversations WHERE id = ?`, convId);
+    }
+
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to delete conversation' });
   }
 });

@@ -75,6 +75,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   const [showInfoPanel, setShowInfoPanel] = useState(false);
   const [activeReactionMenuMsgId, setActiveReactionMenuMsgId] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [showScrollBottom, setShowScrollBottom] = useState(false);
 
   // Message Context Menu state
   const [msgContextMenu, setMsgContextMenu] = useState<{
@@ -93,17 +94,36 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   const [searchResults, setSearchResults] = useState<Message[]>([]);
   const [currentMatchIdx, setCurrentMatchIdx] = useState(0);
 
+  const messagesContainerRef = useRef<HTMLDivElement | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const msgLongPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Auto-resize textarea height
+  // Auto-resize textarea height (up to 6 lines ~168px)
   useEffect(() => {
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto';
-      textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 160)}px`;
+      textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 168)}px`;
     }
   }, [inputText]);
+
+  // Restore draft when conversation changes
+  useEffect(() => {
+    if (!activeConversation) {
+      setInputText('');
+      setReplyTo(null);
+      setEditingMessage(null);
+      return;
+    }
+    const savedDraft = typeof window !== 'undefined'
+      ? (localStorage.getItem(`pulse_draft_${activeConversation.id}`) || '')
+      : '';
+    setInputText(savedDraft);
+    setReplyTo(null);
+    setEditingMessage(null);
+    scrollToBottom('auto');
+  }, [activeConversation?.id]);
 
   useEffect(() => {
     if (!showSearch || !searchQuery.trim() || !activeConversation) {
@@ -169,9 +189,30 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
     activeConversation.partner &&
     onlineUserIds.has(activeConversation.partner.id);
 
+  const handleScroll = () => {
+    if (!messagesContainerRef.current) return;
+    const { scrollTop, scrollHeight, clientHeight } = messagesContainerRef.current;
+    const distFromBottom = scrollHeight - (scrollTop + clientHeight);
+    setShowScrollBottom(distFromBottom > 160);
+  };
+
   const handleInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    setInputText(e.target.value);
-    if (e.target.value.trim()) {
+    const val = e.target.value;
+    setInputText(val);
+
+    if (activeConversation) {
+      if (val.trim()) {
+        try {
+          localStorage.setItem(`pulse_draft_${activeConversation.id}`, val);
+        } catch {}
+      } else {
+        try {
+          localStorage.removeItem(`pulse_draft_${activeConversation.id}`);
+        } catch {}
+      }
+    }
+
+    if (val.trim()) {
       startTyping();
     } else {
       stopTyping();
@@ -181,6 +222,12 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   const handleSend = () => {
     const trimmed = inputText.trim();
     if (!trimmed) return;
+
+    if (activeConversation) {
+      try {
+        localStorage.removeItem(`pulse_draft_${activeConversation.id}`);
+      } catch {}
+    }
 
     if (editingMessage) {
       editMessage(editingMessage.id, trimmed);
@@ -270,6 +317,25 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
       position: { x: e.clientX, y: e.clientY },
       message: msg,
     });
+  };
+
+  const handleMsgTouchStart = (e: React.TouchEvent, msg: Message) => {
+    const touch = e.touches[0];
+    const pos = { x: touch.clientX, y: touch.clientY };
+    msgLongPressTimerRef.current = setTimeout(() => {
+      setMsgContextMenu({
+        isOpen: true,
+        position: pos,
+        message: msg,
+      });
+    }, 450);
+  };
+
+  const handleMsgTouchEnd = () => {
+    if (msgLongPressTimerRef.current) {
+      clearTimeout(msgLongPressTimerRef.current);
+      msgLongPressTimerRef.current = null;
+    }
   };
 
   const closeMsgContextMenu = () => {
@@ -524,8 +590,10 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
 
         {/* Messages Feed with Wallpaper */}
         <div
+          ref={messagesContainerRef}
+          onScroll={handleScroll}
           style={wallpaperInlineStyle}
-          className={`flex-1 overflow-y-auto p-4 space-y-3 ${wallpaperClass}`}
+          className={`flex-1 overflow-y-auto p-4 space-y-2 ${wallpaperClass}`}
         >
           {loadingMessages ? (
             <div className="h-full flex items-center justify-center">
@@ -549,9 +617,35 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
             messages.map((msg, idx) => {
               const isMe = msg.senderId === currentUser?.id;
               const prevMsg = idx > 0 ? messages[idx - 1] : null;
+              const nextMsg = idx < messages.length - 1 ? messages[idx + 1] : null;
+
+              const isSameAuthorPrev = Boolean(
+                prevMsg &&
+                prevMsg.senderId === msg.senderId &&
+                !prevMsg.isDeleted &&
+                !msg.isDeleted &&
+                new Date(msg.createdAt).toDateString() === new Date(prevMsg.createdAt).toDateString() &&
+                Math.abs(new Date(msg.createdAt).getTime() - new Date(prevMsg.createdAt).getTime()) < 5 * 60 * 1000
+              );
+
+              const isSameAuthorNext = Boolean(
+                nextMsg &&
+                nextMsg.senderId === msg.senderId &&
+                !nextMsg.isDeleted &&
+                !msg.isDeleted &&
+                new Date(nextMsg.createdAt).toDateString() === new Date(msg.createdAt).toDateString() &&
+                Math.abs(new Date(nextMsg.createdAt).getTime() - new Date(msg.createdAt).getTime()) < 5 * 60 * 1000
+              );
+
               const currentDateLabel = formatDateSeparator(msg.createdAt);
               const prevDateLabel = prevMsg ? formatDateSeparator(prevMsg.createdAt) : null;
               const showDateHeader = !prevMsg || currentDateLabel !== prevDateLabel;
+
+              const r = settings.bubbleRadius;
+              const s = 4;
+              const bubbleBorderRadius = isMe
+                ? `${r}px ${isSameAuthorPrev ? s : r}px ${isSameAuthorNext ? s : s}px ${r}px`
+                : `${isSameAuthorPrev ? s : r}px ${r}px ${r}px ${isSameAuthorNext ? s : s}px`;
 
               return (
                 <React.Fragment key={msg.id}>
@@ -567,30 +661,39 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                   <div
                     id={`msg-${msg.id}`}
                     onContextMenu={(e) => handleMsgContextMenu(e, msg)}
-                    className={`flex gap-2 group relative transition-all duration-200 ${isMe ? 'justify-end' : 'justify-start'}`}
+                    onTouchStart={(e) => handleMsgTouchStart(e, msg)}
+                    onTouchEnd={handleMsgTouchEnd}
+                    onTouchMove={handleMsgTouchEnd}
+                    className={`flex gap-2 group relative transition-all duration-200 ${
+                      isSameAuthorPrev ? '!mt-1' : '!mt-3'
+                    } ${isMe ? 'justify-end' : 'justify-start'}`}
                   >
                     {!isMe && (
-                      <Avatar
-                        src={msg.senderAvatar}
-                        name={msg.senderName}
-                        size="sm"
-                        className="self-end mb-0.5 shrink-0"
-                      />
+                      !isSameAuthorNext ? (
+                        <Avatar
+                          src={msg.senderAvatar}
+                          name={msg.senderName}
+                          size="sm"
+                          className="self-end mb-0.5 shrink-0"
+                        />
+                      ) : (
+                        <div className="w-8 shrink-0" />
+                      )
                     )}
 
                     {/* Message Bubble */}
                     <div
                       style={{
-                        borderRadius: `${settings.bubbleRadius}px`,
+                        borderRadius: bubbleBorderRadius,
                       }}
                       className={`relative max-w-[85%] sm:max-w-md md:max-w-lg p-2.5 shadow-sm transition-all select-text ${
                         isMe
-                          ? 'bg-[var(--accent-default,#6366f1)] text-white rounded-br-xs'
-                          : 'bg-[var(--bg-bubble-incoming,#151c2c)] border border-[var(--border-subtle,rgba(255,255,255,0.06))] text-[var(--text-primary,#f8fafc)] rounded-bl-xs'
+                          ? 'bg-[var(--accent-default,#6366f1)] text-white'
+                          : 'bg-[var(--bg-bubble-incoming,#151c2c)] border border-[var(--border-subtle,rgba(255,255,255,0.06))] text-[var(--text-primary,#f8fafc)]'
                       }`}
                     >
                       {/* Sender Name in group */}
-                      {!isMe && isGroup && (
+                      {!isMe && isGroup && !isSameAuthorPrev && (
                         <div className="text-[11px] font-semibold text-[var(--accent-default,#818cf8)] mb-1">
                           {msg.senderName}
                         </div>
@@ -808,6 +911,25 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                           ))}
                         </div>
                       )}
+
+                      {/* Telegram Message Tails */}
+                      {isMe && !isSameAuthorNext && (
+                        <svg
+                          viewBox="0 0 11 20"
+                          className="absolute -bottom-[1px] -right-[7px] w-[9px] h-[16px] text-[var(--accent-default,#6366f1)] fill-current pointer-events-none"
+                        >
+                          <path d="M0 0 C4 6 8 13 11 16 L0 16 Z" />
+                        </svg>
+                      )}
+
+                      {!isMe && !isSameAuthorNext && (
+                        <svg
+                          viewBox="0 0 11 20"
+                          className="absolute -bottom-[1px] -left-[7px] w-[9px] h-[16px] text-[var(--bg-bubble-incoming,#151c2c)] fill-current pointer-events-none -scale-x-100"
+                        >
+                          <path d="M0 0 C4 6 8 13 11 16 L0 16 Z" />
+                        </svg>
+                      )}
                     </div>
                   </div>
                 </React.Fragment>
@@ -961,10 +1083,46 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
           </div>
         </footer>
 
+        {/* Floating Scroll to bottom button */}
+        {showScrollBottom && (
+          <button
+            type="button"
+            onClick={() => scrollToBottom('smooth')}
+            aria-label="Вниз"
+            className="absolute right-6 bottom-20 z-20 w-10 h-10 rounded-full bg-[var(--bg-surface,#141d33)] border border-[var(--border-subtle,rgba(255,255,255,0.12))] text-[var(--text-secondary,#94a3b8)] hover:text-white shadow-xl flex items-center justify-center transition-all hover:scale-105 active:scale-95 animate-in fade-in zoom-in-95 cursor-pointer backdrop-blur-md"
+          >
+            <ChevronDown className="w-5 h-5" />
+            {activeConversation.unreadCount && activeConversation.unreadCount > 0 ? (
+              <span className="absolute -top-1 -right-1 px-1.5 py-0.5 text-[10px] font-bold rounded-full bg-[var(--accent-default,#6366f1)] text-white shadow-sm">
+                {activeConversation.unreadCount}
+              </span>
+            ) : null}
+          </button>
+        )}
+
         {/* Message Context Menu */}
         <ContextMenu
           isOpen={msgContextMenu.isOpen}
           position={msgContextMenu.position}
+          header={
+            <div className="flex items-center justify-between gap-1 px-1 py-0.5">
+              {POPULAR_EMOJIS.map((emoji) => (
+                <button
+                  key={emoji}
+                  type="button"
+                  onClick={() => {
+                    if (msgContextMenu.message) {
+                      toggleReaction(msgContextMenu.message.id, emoji);
+                    }
+                    closeMsgContextMenu();
+                  }}
+                  className="w-7 h-7 flex items-center justify-center text-sm hover:scale-125 transition-transform cursor-pointer rounded-lg hover:bg-white/10"
+                >
+                  {emoji}
+                </button>
+              ))}
+            </div>
+          }
           items={getMsgContextMenuItems()}
           onClose={closeMsgContextMenu}
         />

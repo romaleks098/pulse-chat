@@ -340,9 +340,10 @@ export async function initDatabase() {
     }
   }
 
-  // Cleanup old sync events and expired oauth states
+  // Cleanup old sync events, expired oauth states and heal duplicate saved messages
   await cleanupOldSyncEvents();
   await cleanupExpiredOAuthStates();
+  await healAndConsolidateSavedMessages();
   console.log('[Database] Schema initialization and migrations complete.');
 }
 
@@ -391,6 +392,68 @@ export async function cleanupExpiredOAuthStates() {
     await db.exec(query);
   } catch (err: any) {
     console.error('Error cleaning expired oauth states:', err.message);
+  }
+}
+
+/**
+ * Heals and consolidates multiple duplicate "Saved Messages" ("Избранное") for users.
+ * Reassigns all messages from duplicate chats into the canonical chat, then deletes empty duplicates.
+ */
+export async function healAndConsolidateSavedMessages() {
+  try {
+    // 1. Ensure all rows matching name 'Избранное' or avatar with saved_messages_star are marked is_saved = 1
+    await db.exec(`
+      UPDATE conversations
+      SET is_saved = 1, type = 'direct'
+      WHERE name = 'Избранное' OR avatar_url LIKE '%saved_messages_star%';
+    `);
+
+    // 2. Query distinct users who own is_saved = 1 conversations
+    const usersWithSaved = await db.all<{ created_by: string }>(`
+      SELECT DISTINCT created_by FROM conversations WHERE is_saved = 1 AND created_by IS NOT NULL
+    `);
+
+    for (const u of usersWithSaved) {
+      const userId = u.created_by;
+      const userSavedConvs = await db.all<{ id: string; created_at: string }>(`
+        SELECT id, created_at FROM conversations
+        WHERE created_by = ? AND is_saved = 1
+        ORDER BY created_at ASC
+      `, userId);
+
+      if (userSavedConvs.length > 1) {
+        // Calculate message count for each duplicate
+        const convsWithMsgCount = await Promise.all(
+          userSavedConvs.map(async (c) => {
+            const count = await db.get<{ cnt: number | string }>(
+              'SELECT COUNT(*) as cnt FROM messages WHERE conversation_id = ?',
+              c.id
+            );
+            return { id: c.id, count: Number(count?.cnt || 0), createdAt: c.created_at };
+          })
+        );
+
+        // Sort descending by message count, then ascending by created_at
+        convsWithMsgCount.sort((a, b) => {
+          if (b.count !== a.count) return b.count - a.count;
+          return a.createdAt.localeCompare(b.createdAt);
+        });
+
+        const canonicalId = convsWithMsgCount[0].id;
+        const duplicateIds = userSavedConvs.map((c) => c.id).filter((id) => id !== canonicalId);
+
+        for (const dupId of duplicateIds) {
+          // Reassign all messages from duplicate conversation to canonical conversation
+          await db.run('UPDATE messages SET conversation_id = ? WHERE conversation_id = ?', canonicalId, dupId);
+          // Delete duplicate memberships and conversation record
+          await db.run('DELETE FROM conversation_members WHERE conversation_id = ?', dupId);
+          await db.run('DELETE FROM conversations WHERE id = ?', dupId);
+          console.log(`[Database] Safely merged duplicate Saved Messages: ${dupId} -> canonical: ${canonicalId}`);
+        }
+      }
+    }
+  } catch (err: any) {
+    console.error('Error consolidating saved messages:', err.message);
   }
 }
 

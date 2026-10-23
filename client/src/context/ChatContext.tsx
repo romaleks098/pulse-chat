@@ -18,6 +18,7 @@ interface ChatContextType {
   revokeAllOtherSessions: () => Promise<void>;
   onlineUserIds: Set<string>;
   typingUsers: string[];
+  typingMap: Record<string, Record<string, string>>;
   loadingMessages: boolean;
   connectionStatus: 'connected' | 'connecting' | 'disconnected';
   isAuthInitializing: boolean;
@@ -52,6 +53,7 @@ interface ChatContextType {
   toggleMuteChat: (conversationId: string) => Promise<void>;
   toggleArchiveChat: (conversationId: string) => Promise<void>;
   clearConversation: (conversationId: string) => Promise<void>;
+  deleteConversation: (conversationId: string) => Promise<void>;
   markConversationAsRead: (conversationId: string) => Promise<void>;
 }
 
@@ -832,6 +834,20 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
+  const deleteConversation = async (conversationId: string) => {
+    try {
+      await api.deleteConversation(conversationId);
+      if (activeConversationId === conversationId) {
+        setActiveConversationId(null);
+        localStorage.removeItem('pulse_active_conv_id');
+        setMessages([]);
+      }
+      await refreshConversations();
+    } catch (err) {
+      console.error('Failed to delete conversation:', err);
+    }
+  };
+
   const markConversationAsRead = async (conversationId: string) => {
     try {
       await api.markConversationAsRead(conversationId);
@@ -863,6 +879,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
         revokeAllOtherSessions,
         onlineUserIds,
         typingUsers: activeTyping,
+        typingMap,
         loadingMessages,
         connectionStatus,
         isAuthInitializing,
@@ -889,6 +906,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
         toggleMuteChat,
         toggleArchiveChat,
         clearConversation,
+        deleteConversation,
         markConversationAsRead,
       }}
     >

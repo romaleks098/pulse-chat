@@ -21,6 +21,7 @@ import {
   PinOff,
   VolumeX,
   Volume2,
+  Check,
   CheckCheck,
   WifiOff,
   AlertCircle,
@@ -52,11 +53,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
     selectConversation,
     openSavedMessages,
     onlineUserIds,
+    typingMap,
     connectionStatus,
     logout,
     togglePinChat,
     toggleMuteChat,
     clearConversation,
+    deleteConversation,
     markConversationAsRead,
   } = useChat();
 
@@ -169,6 +172,27 @@ export const Sidebar: React.FC<SidebarProps> = ({
     });
   };
 
+  const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const handleTouchStart = (e: React.TouchEvent, conv: Conversation) => {
+    const touch = e.touches[0];
+    const pos = { x: touch.clientX, y: touch.clientY };
+    longPressTimerRef.current = setTimeout(() => {
+      setContextMenuState({
+        isOpen: true,
+        position: pos,
+        targetConv: conv,
+      });
+    }, 450);
+  };
+
+  const handleTouchEnd = () => {
+    if (longPressTimerRef.current) {
+      clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+  };
+
   const closeContextMenu = () => {
     setContextMenuState({ isOpen: false, position: null, targetConv: null });
   };
@@ -223,6 +247,15 @@ export const Sidebar: React.FC<SidebarProps> = ({
         separator: true,
         onClick: () => {
           clearConversation(conv.id);
+          closeContextMenu();
+        },
+      },
+      {
+        label: 'Удалить чат',
+        icon: <Trash2 className="w-4 h-4 text-rose-400" />,
+        danger: true,
+        onClick: () => {
+          deleteConversation(conv.id);
           closeContextMenu();
         },
       },
@@ -345,6 +378,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
           <div
             onClick={openSavedMessages}
             onContextMenu={(e) => savedConv && handleContextMenu(e, savedConv)}
+            onTouchStart={(e) => savedConv && handleTouchStart(e, savedConv)}
+            onTouchEnd={handleTouchEnd}
+            onTouchMove={handleTouchEnd}
             className={`rounded-2xl flex items-center cursor-pointer transition-all ${densityPadding} ${
               isSavedActive
                 ? 'bg-[var(--accent-default,#6366f1)] text-white shadow-md'
@@ -380,12 +416,22 @@ export const Sidebar: React.FC<SidebarProps> = ({
           filteredConversations.map((conv) => {
             const isActive = conv.id === activeConversationId;
             const isPartnerOnline = conv.type === 'direct' && conv.partner && onlineUserIds.has(conv.partner.id);
+            const isOutgoingLast = Boolean(conv.lastMessage && conv.lastMessage.senderId === currentUser?.id);
+            const isRead = conv.unreadCount === 0;
+
+            const typers = typingMap[conv.id] ? Object.values(typingMap[conv.id]) : [];
+            const hasDraft = !typers.length && conv.id !== activeConversationId && typeof window !== 'undefined'
+              ? (localStorage.getItem(`pulse_draft_${conv.id}`) || '').trim()
+              : '';
 
             return (
               <div
                 key={conv.id}
                 onClick={() => selectConversation(conv.id)}
                 onContextMenu={(e) => handleContextMenu(e, conv)}
+                onTouchStart={(e) => handleTouchStart(e, conv)}
+                onTouchEnd={handleTouchEnd}
+                onTouchMove={handleTouchEnd}
                 className={`rounded-2xl flex items-center cursor-pointer transition-all ${densityPadding} ${
                   isActive
                     ? 'bg-[var(--accent-default,#6366f1)] text-white shadow-md'
@@ -419,6 +465,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     </div>
 
                     <div className="flex items-center gap-1 shrink-0">
+                      {isOutgoingLast && (
+                        isRead ? (
+                          <CheckCheck className={`w-3.5 h-3.5 ${isActive ? 'text-white' : 'text-[var(--accent-default,#6366f1)]'}`} />
+                        ) : (
+                          <Check className={`w-3.5 h-3.5 ${isActive ? 'text-white/80' : 'text-[var(--text-muted,#64748b)]'}`} />
+                        )
+                      )}
                       {conv.isPinned && (
                         <Pin className={`w-3 h-3 rotate-45 shrink-0 ${isActive ? 'text-white' : 'text-[var(--accent-default,#6366f1)]'}`} />
                       )}
@@ -440,7 +493,21 @@ export const Sidebar: React.FC<SidebarProps> = ({
                         isActive ? 'text-white/90' : 'text-[var(--text-secondary,#94a3b8)]'
                       }`}
                     >
-                      {conv.lastMessage ? (
+                      {typers.length > 0 ? (
+                        <span className={`flex items-center gap-1 font-medium ${isActive ? 'text-white' : 'text-[var(--accent-default,#6366f1)]'}`}>
+                          <span className="flex gap-0.5 items-center">
+                            <span className="w-1 h-1 rounded-full bg-current animate-bounce" />
+                            <span className="w-1 h-1 rounded-full bg-current animate-bounce [animation-delay:0.15s]" />
+                            <span className="w-1 h-1 rounded-full bg-current animate-bounce [animation-delay:0.3s]" />
+                          </span>
+                          <span>{conv.type === 'group' ? `${typers[0]} печатает…` : 'печатает…'}</span>
+                        </span>
+                      ) : hasDraft ? (
+                        <span className="truncate">
+                          <span className="text-rose-400 font-semibold mr-1">Черновик:</span>
+                          <span className={isActive ? 'text-white/90' : 'text-[var(--text-secondary,#94a3b8)]'}>{hasDraft}</span>
+                        </span>
+                      ) : conv.lastMessage ? (
                         <>
                           {conv.type === 'group' && (
                             <span className={isActive ? 'font-medium text-white' : 'font-medium text-[var(--text-primary,#f8fafc)]'}>

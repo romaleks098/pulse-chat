@@ -13,6 +13,7 @@ interface ContextMenuProps {
   isOpen: boolean;
   position: { x: number; y: number } | null;
   items: ContextMenuItem[];
+  header?: React.ReactNode;
   onClose: () => void;
 }
 
@@ -20,6 +21,7 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
   isOpen,
   position,
   items,
+  header,
   onClose,
 }) => {
   const menuRef = useRef<HTMLDivElement | null>(null);
@@ -70,6 +72,11 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
       style={{ left: `${left}px`, top: `${top}px` }}
       className="fixed z-50 min-w-[190px] bg-[var(--bg-surface,#141d33)] border border-[var(--border-subtle,rgba(255,255,255,0.1))] rounded-2xl shadow-2xl py-1.5 animate-in fade-in zoom-in-95 duration-100 select-none backdrop-blur-xl"
     >
+      {header && (
+        <div className="px-2 py-1.5 border-b border-[var(--border-subtle,rgba(255,255,255,0.08))] mb-1">
+          {header}
+        </div>
+      )}
       {items.map((item, idx) => (
         <React.Fragment key={idx}>
           {item.separator && (

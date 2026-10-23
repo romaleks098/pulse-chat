@@ -344,6 +344,13 @@ export const api = {
     });
   },
 
+  async deleteConversation(conversationId: string): Promise<void> {
+    await fetch(`${API_BASE}/conversations/${conversationId}`, {
+      method: 'DELETE',
+      headers: getAuthHeaders(),
+    });
+  },
+
   async createChannel(data: { name: string; description?: string; avatarUrl?: string }): Promise<{ id: string; isNew: boolean }> {
     const res = await fetch(`${API_BASE}/conversations/channel`, {
       method: 'POST',

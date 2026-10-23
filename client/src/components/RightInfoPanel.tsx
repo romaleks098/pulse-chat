@@ -1,6 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import { useChat } from '../context/ChatContext';
 import { Avatar } from './ui/Avatar';
+import { Tabs } from './ui/Tabs';
 import { VoiceMessagePlayer } from './VoiceMessagePlayer';
 import { formatLastSeen, formatFileSize } from '../utils/format';
 import {
@@ -222,64 +223,21 @@ export const RightInfoPanel: React.FC<RightInfoPanelProps> = ({
 
         {/* Media / Files / Links Tabs */}
         <div className="p-3">
-          <div className="flex p-1 bg-black/20 rounded-xl mb-3 border border-white/5">
-            <button
-              onClick={() => setActiveTab('media')}
-              className={`flex-1 py-1.5 text-xs font-medium rounded-lg transition-all flex items-center justify-center gap-1 ${
-                activeTab === 'media'
-                  ? 'bg-[var(--accent-default,#6366f1)] text-white shadow-sm'
-                  : 'text-[var(--text-secondary,#94a3b8)] hover:text-white'
-              }`}
-            >
-              <ImageIcon className="w-3.5 h-3.5" />
-              <span>{mediaMessages.length}</span>
-            </button>
-            <button
-              onClick={() => setActiveTab('files')}
-              className={`flex-1 py-1.5 text-xs font-medium rounded-lg transition-all flex items-center justify-center gap-1 ${
-                activeTab === 'files'
-                  ? 'bg-[var(--accent-default,#6366f1)] text-white shadow-sm'
-                  : 'text-[var(--text-secondary,#94a3b8)] hover:text-white'
-              }`}
-            >
-              <FileText className="w-3.5 h-3.5" />
-              <span>{fileMessages.length}</span>
-            </button>
-            <button
-              onClick={() => setActiveTab('voice')}
-              className={`flex-1 py-1.5 text-xs font-medium rounded-lg transition-all flex items-center justify-center gap-1 ${
-                activeTab === 'voice'
-                  ? 'bg-[var(--accent-default,#6366f1)] text-white shadow-sm'
-                  : 'text-[var(--text-secondary,#94a3b8)] hover:text-white'
-              }`}
-            >
-              <Mic className="w-3.5 h-3.5" />
-              <span>{voiceMessages.length}</span>
-            </button>
-            <button
-              onClick={() => setActiveTab('links')}
-              className={`flex-1 py-1.5 text-xs font-medium rounded-lg transition-all flex items-center justify-center gap-1 ${
-                activeTab === 'links'
-                  ? 'bg-[var(--accent-default,#6366f1)] text-white shadow-sm'
-                  : 'text-[var(--text-secondary,#94a3b8)] hover:text-white'
-              }`}
-            >
-              <LinkIcon className="w-3.5 h-3.5" />
-              <span>{linkItems.length}</span>
-            </button>
-            {(isGroup || isChannel) && (
-              <button
-                onClick={() => setActiveTab('members')}
-                className={`flex-1 py-1.5 text-xs font-medium rounded-lg transition-all flex items-center justify-center gap-1 ${
-                  activeTab === 'members'
-                    ? 'bg-[var(--accent-default,#6366f1)] text-white shadow-sm'
-                    : 'text-[var(--text-secondary,#94a3b8)] hover:text-white'
-                }`}
-              >
-                <Users className="w-3.5 h-3.5" />
-              </button>
-            )}
-          </div>
+          <Tabs
+            tabs={[
+              { id: 'media', label: 'Медиа', icon: <ImageIcon className="w-3.5 h-3.5" />, count: mediaMessages.length },
+              { id: 'files', label: 'Файлы', icon: <FileText className="w-3.5 h-3.5" />, count: fileMessages.length },
+              { id: 'links', label: 'Ссылки', icon: <LinkIcon className="w-3.5 h-3.5" />, count: linkItems.length },
+              { id: 'voice', label: 'Голос', icon: <Mic className="w-3.5 h-3.5" />, count: voiceMessages.length },
+              ...((isGroup || isChannel)
+                ? [{ id: 'members', label: 'Участники', icon: <Users className="w-3.5 h-3.5" />, count: activeConversation.members?.length || 1 }]
+                : []),
+            ]}
+            activeTab={activeTab}
+            onChange={(id) => setActiveTab(id as TabType)}
+            variant="pills"
+            className="mb-3"
+          />
 
           {/* Tab content: Media Grid */}
           {activeTab === 'media' && (

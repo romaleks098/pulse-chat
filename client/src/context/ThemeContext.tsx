@@ -304,12 +304,35 @@ export const ThemeProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
     // Apply typography & geometry
     root.style.setProperty('--font-size-base', `${settings.fontSize}px`);
+    root.style.setProperty('--msg-font-size', `${settings.fontSize}px`);
     root.style.setProperty('--bubble-radius', `${settings.bubbleRadius}px`);
     root.style.setProperty('--sidebar-width', `${settings.sidebarWidth}px`);
 
+    // Ensure incoming bubble compatibility alias
+    if (presetTokens['--bubble-in']) {
+      root.style.setProperty('--bg-bubble-incoming', presetTokens['--bubble-in']);
+    }
+
+    // Shadows based on theme
+    if (resolvedTheme === 'dark') {
+      root.style.setProperty('--shadow-sm', '0 1px 2px 0 rgba(0, 0, 0, 0.4)');
+      root.style.setProperty('--shadow-md', '0 4px 6px -1px rgba(0, 0, 0, 0.5), 0 2px 4px -2px rgba(0, 0, 0, 0.5)');
+      root.style.setProperty('--shadow-lg', '0 10px 15px -3px rgba(0, 0, 0, 0.6), 0 4px 6px -4px rgba(0, 0, 0, 0.6)');
+      root.style.setProperty('--bubble-in-shadow', '0 1px 2px rgba(0, 0, 0, 0.25)');
+      root.style.setProperty('--bubble-out-shadow', '0 1px 2px rgba(0, 0, 0, 0.3)');
+    } else {
+      root.style.setProperty('--shadow-sm', '0 1px 2px 0 rgba(0, 0, 0, 0.05)');
+      root.style.setProperty('--shadow-md', '0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -2px rgba(0, 0, 0, 0.1)');
+      root.style.setProperty('--shadow-lg', '0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -4px rgba(0, 0, 0, 0.1)');
+      root.style.setProperty('--bubble-in-shadow', '0 1px 2px rgba(0, 0, 0, 0.08)');
+      root.style.setProperty('--bubble-out-shadow', '0 1px 2px rgba(0, 0, 0, 0.12)');
+    }
+
     // Chat density spacing
     const densitySpacing = settings.density === 'compact' ? '6px' : settings.density === 'spacious' ? '14px' : '10px';
+    const densityHeight = settings.density === 'compact' ? '54px' : settings.density === 'spacious' ? '72px' : '64px';
     root.style.setProperty('--chat-item-py', densitySpacing);
+    root.style.setProperty('--list-item-height', densityHeight);
 
     // Dark/light dataset attribute for child CSS selectors
     root.setAttribute('data-theme', resolvedTheme);
