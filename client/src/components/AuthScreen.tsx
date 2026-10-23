@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useChat } from '../context/ChatContext';
 import { MessageSquare, Lock, User as UserIcon, Sparkles, ArrowRight } from 'lucide-react';
+import { startOAuthPKCE } from '../utils/pkce';
 
 const AVATAR_PRESETS = [
   'https://api.dicebear.com/7.x/bottts/svg?seed=Felix',
@@ -55,15 +56,15 @@ export const AuthScreen: React.FC = () => {
   };
 
   const handleGoogleClick = () => {
-    window.location.href = '/api/auth/google';
+    startOAuthPKCE('google');
   };
 
   const handleGithubClick = () => {
-    window.location.href = '/api/auth/github';
+    startOAuthPKCE('github');
   };
 
   const handleTelegramClick = () => {
-    window.location.href = '/api/auth/telegram';
+    startOAuthPKCE('telegram');
   };
 
   return (

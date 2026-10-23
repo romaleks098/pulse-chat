@@ -15,6 +15,11 @@ import {
   Smartphone,
   Check,
   CheckCheck,
+  Laptop,
+  Globe,
+  Trash2,
+  LogOut,
+  QrCode,
 } from 'lucide-react';
 
 interface SettingsModalProps {
@@ -59,13 +64,27 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     importTheme,
   } = useTheme();
 
-  const { currentUser, updateProfile } = useChat();
+  const {
+    currentUser,
+    updateProfile,
+    sessions,
+    loadSessions,
+    revokeSession,
+    revokeAllOtherSessions,
+  } = useChat();
   const toast = useToast();
 
-  const [activeTab, setActiveTab] = useState<'appearance' | 'account'>('appearance');
+  const [activeTab, setActiveTab] = useState<'appearance' | 'devices' | 'account'>('appearance');
   const [importJson, setImportJson] = useState('');
   const [showImportBox, setShowImportBox] = useState(false);
   const [syncingWithServer, setSyncingWithServer] = useState(false);
+  const [revokingOther, setRevokingOther] = useState(false);
+
+  React.useEffect(() => {
+    if (isOpen && activeTab === 'devices') {
+      loadSessions();
+    }
+  }, [isOpen, activeTab, loadSessions]);
 
   const handleExport = () => {
     const json = exportTheme();
@@ -124,6 +143,18 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         </button>
         <button
           type="button"
+          onClick={() => setActiveTab('devices')}
+          className={`flex-1 py-2 text-xs font-semibold rounded-xl flex items-center justify-center gap-2 transition-all ${
+            activeTab === 'devices'
+              ? 'bg-[var(--accent-default,#6366f1)] text-white shadow-md'
+              : 'text-[var(--text-secondary,#94a3b8)] hover:text-white'
+          }`}
+        >
+          <Laptop className="w-4 h-4" />
+          <span>Устройства ({sessions.length || 1})</span>
+        </button>
+        <button
+          type="button"
           onClick={() => setActiveTab('account')}
           className={`flex-1 py-2 text-xs font-semibold rounded-xl flex items-center justify-center gap-2 transition-all ${
             activeTab === 'account'
@@ -132,7 +163,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           }`}
         >
           <Sparkles className="w-4 h-4" />
-          <span>Устройство и Синхронизация</span>
+          <span>Аккаунт</span>
         </button>
       </div>
 
@@ -392,8 +423,148 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             </div>
           )}
         </div>
+      ) : activeTab === 'devices' ? (
+        /* Active Devices & Sessions Tab */
+        <div className="space-y-4 pb-2">
+          {/* Header & Terminate All Others Button */}
+          <div className="flex items-center justify-between gap-3 p-3.5 bg-slate-950/50 rounded-2xl border border-white/10">
+            <div>
+              <h4 className="text-xs font-bold text-white uppercase tracking-wider">Активные сеансы</h4>
+              <p className="text-[11px] text-[var(--text-secondary,#94a3b8)]">
+                Устройства, на которых выполнен вход в ваш аккаунт
+              </p>
+            </div>
+            {sessions.filter((s) => !s.isCurrent).length > 0 && (
+              <Button
+                size="sm"
+                variant="danger"
+                loading={revokingOther}
+                icon={<LogOut className="w-3.5 h-3.5" />}
+                onClick={async () => {
+                  setRevokingOther(true);
+                  try {
+                    await revokeAllOtherSessions();
+                    toast.success('Все другие сеансы успешно завершены');
+                  } catch {
+                    toast.error('Не удалось завершить сеансы');
+                  } finally {
+                    setRevokingOther(false);
+                  }
+                }}
+              >
+                Завершить все другие
+              </Button>
+            )}
+          </div>
+
+          {/* Sessions List */}
+          <div className="space-y-2">
+            {sessions.length === 0 ? (
+              <div className="p-4 bg-slate-950/40 rounded-2xl border border-white/10 text-center text-xs text-[var(--text-secondary,#94a3b8)]">
+                Загрузка списка устройств...
+              </div>
+            ) : (
+              sessions.map((session) => {
+                const isPhone = /Android|iOS|Mobile/i.test(session.deviceInfo);
+                const isElectron = /Desktop|Electron/i.test(session.deviceInfo);
+
+                return (
+                  <div
+                    key={session.id}
+                    className={`p-3.5 rounded-2xl border flex items-center justify-between gap-3 transition-all ${
+                      session.isCurrent
+                        ? 'bg-indigo-500/10 border-indigo-500/30'
+                        : 'bg-slate-950/50 border-white/10 hover:border-white/20'
+                    }`}
+                  >
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div
+                        className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${
+                          session.isCurrent ? 'bg-indigo-500/20 text-indigo-400' : 'bg-slate-800 text-slate-400'
+                        }`}
+                      >
+                        {isPhone ? (
+                          <Smartphone className="w-5 h-5" />
+                        ) : isElectron ? (
+                          <Laptop className="w-5 h-5" />
+                        ) : (
+                          <Globe className="w-5 h-5" />
+                        )}
+                      </div>
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm font-semibold text-white truncate">
+                            {session.deviceInfo}
+                          </span>
+                          {session.isCurrent && (
+                            <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                              Текущий
+                            </span>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-2 text-[11px] text-[var(--text-secondary,#94a3b8)] mt-0.5">
+                          {session.ipAddress && <span>IP: {session.ipAddress}</span>}
+                          <span>•</span>
+                          <span>
+                            {session.isCurrent
+                              ? 'Онлайн'
+                              : `Активность: ${new Date(session.lastUsedAt).toLocaleDateString('ru-RU', {
+                                  day: 'numeric',
+                                  month: 'short',
+                                  hour: '2-digit',
+                                  minute: '2-digit',
+                                })}`}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {!session.isCurrent && (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="text-rose-400 hover:text-rose-300 hover:bg-rose-500/10 shrink-0"
+                        icon={<Trash2 className="w-3.5 h-3.5" />}
+                        onClick={async () => {
+                          try {
+                            await revokeSession(session.id);
+                            toast.success('Сессия завершена');
+                          } catch {
+                            toast.error('Не удалось завершить сессию');
+                          }
+                        }}
+                      >
+                        Завершить
+                      </Button>
+                    )}
+                  </div>
+                );
+              })
+            )}
+          </div>
+
+          {/* Quick Connect Mobile Option */}
+          {onOpenPhoneConnect && (
+            <div className="p-3.5 bg-slate-950/40 rounded-2xl border border-white/10 flex items-center justify-between gap-3 mt-4">
+              <div className="flex items-center gap-3">
+                <div className="w-9 h-9 rounded-xl bg-violet-500/15 text-violet-400 flex items-center justify-center shrink-0">
+                  <QrCode className="w-5 h-5" />
+                </div>
+                <div>
+                  <h5 className="text-xs font-semibold text-white">Связать устройство по QR</h5>
+                  <p className="text-[11px] text-[var(--text-secondary,#94a3b8)]">
+                    Мгновенный вход в приложении на телефоне
+                  </p>
+                </div>
+              </div>
+              <Button size="sm" variant="secondary" onClick={onOpenPhoneConnect}>
+                QR-код
+              </Button>
+            </div>
+          )}
+        </div>
       ) : (
-        /* Account & Device Tab */
+        /* Account Tab */
         <div className="space-y-5 pb-2">
           <div className="p-4 bg-slate-950/50 rounded-2xl border border-white/10 flex items-center justify-between">
             <div className="flex items-center gap-3">

@@ -1,11 +1,13 @@
-import type { User, Conversation, Message, NetworkInfo } from '../types';
+import type { User, Conversation, Message, NetworkInfo, SessionInfo } from '../types';
 import { API_BASE } from '../config';
 
 function getAuthHeaders(): HeadersInit {
   const token = localStorage.getItem('token');
+  const refreshToken = localStorage.getItem('pulse_refresh_token');
   return {
     'Content-Type': 'application/json',
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    ...(refreshToken ? { 'X-Refresh-Token': refreshToken } : {}),
   };
 }
 
@@ -15,39 +17,132 @@ export const api = {
     const res = await fetch(`${API_BASE}/auth/register`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
       body: JSON.stringify(data),
     });
     if (!res.ok) {
-      const err = await res.json();
+      const err = await res.json().catch(() => ({}));
       throw new Error(err.error || 'Ошибка при регистрации');
     }
-    return res.json() as Promise<{ token: string; user: User }>;
+    const result = await res.json();
+    if (result.token) localStorage.setItem('token', result.token);
+    if (result.refreshToken) localStorage.setItem('pulse_refresh_token', result.refreshToken);
+    return result as { token: string; refreshToken?: string; user: User };
   },
 
   async login(data: { username: string; password: string }) {
     const res = await fetch(`${API_BASE}/auth/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
       body: JSON.stringify(data),
     });
     if (!res.ok) {
-      const err = await res.json();
+      const err = await res.json().catch(() => ({}));
       throw new Error(err.error || 'Неверный логин или пароль');
     }
-    return res.json() as Promise<{ token: string; user: User }>;
+    const result = await res.json();
+    if (result.token) localStorage.setItem('token', result.token);
+    if (result.refreshToken) localStorage.setItem('pulse_refresh_token', result.refreshToken);
+    return result as { token: string; refreshToken?: string; user: User };
   },
 
   async socialLogin(provider: 'telegram' | 'google' | 'github', data: any) {
     const res = await fetch(`${API_BASE}/auth/social`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
       body: JSON.stringify({ provider, data }),
     });
     if (!res.ok) {
-      const err = await res.json();
+      const err = await res.json().catch(() => ({}));
       throw new Error(err.error || 'Ошибка входа через социальную сеть');
     }
-    return res.json() as Promise<{ token: string; user: User }>;
+    const result = await res.json();
+    if (result.token) localStorage.setItem('token', result.token);
+    if (result.refreshToken) localStorage.setItem('pulse_refresh_token', result.refreshToken);
+    return result as { token: string; refreshToken?: string; user: User };
+  },
+
+  async refreshSession(): Promise<{ token: string; refreshToken?: string; user: User }> {
+    const refreshToken = localStorage.getItem('pulse_refresh_token');
+    const res = await fetch(`${API_BASE}/auth/refresh`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(refreshToken ? { 'X-Refresh-Token': refreshToken } : {}),
+      },
+      credentials: 'include',
+      body: JSON.stringify({ refreshToken: refreshToken || undefined }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      const error = new Error(err.error || 'Сессия истекла');
+      (error as any).status = res.status;
+      (error as any).tokenReused = err.tokenReused;
+      throw error;
+    }
+    const result = await res.json();
+    if (result.token) localStorage.setItem('token', result.token);
+    if (result.refreshToken) localStorage.setItem('pulse_refresh_token', result.refreshToken);
+    return result;
+  },
+
+  async logout(): Promise<void> {
+    const refreshToken = localStorage.getItem('pulse_refresh_token');
+    await fetch(`${API_BASE}/auth/logout`, {
+      method: 'POST',
+      headers: getAuthHeaders(),
+      credentials: 'include',
+      body: JSON.stringify({ refreshToken: refreshToken || undefined }),
+    }).catch(() => {});
+    localStorage.removeItem('token');
+    localStorage.removeItem('pulse_refresh_token');
+  },
+
+  async getSessions(): Promise<SessionInfo[]> {
+    const res = await fetch(`${API_BASE}/auth/sessions`, {
+      headers: getAuthHeaders(),
+      credentials: 'include',
+    });
+    if (!res.ok) throw new Error('Не удалось загрузить список устройств');
+    return res.json();
+  },
+
+  async revokeSession(sessionId: string): Promise<void> {
+    const res = await fetch(`${API_BASE}/auth/sessions/${sessionId}`, {
+      method: 'DELETE',
+      headers: getAuthHeaders(),
+      credentials: 'include',
+    });
+    if (!res.ok) throw new Error('Не удалось отозвать сессию');
+  },
+
+  async revokeAllOtherSessions(): Promise<{ count: number }> {
+    const res = await fetch(`${API_BASE}/auth/sessions`, {
+      method: 'DELETE',
+      headers: getAuthHeaders(),
+      credentials: 'include',
+    });
+    if (!res.ok) throw new Error('Не удалось завершить другие сессии');
+    return res.json();
+  },
+
+  async exchangeAuthCode(code: string, codeVerifier: string, redirectUri: string) {
+    const res = await fetch(`${API_BASE}/auth/exchange`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ code, code_verifier: codeVerifier, redirect_uri: redirectUri }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'Ошибка обмена кода авторизации');
+    }
+    const result = await res.json();
+    if (result.token) localStorage.setItem('token', result.token);
+    if (result.refreshToken) localStorage.setItem('pulse_refresh_token', result.refreshToken);
+    return result as { token: string; refreshToken?: string; user: User };
   },
 
   async getAuthProviders(): Promise<{ telegramBotName: string; googleClientId: string; githubClientId: string }> {
@@ -59,11 +154,18 @@ export const api = {
   async getMe(): Promise<User> {
     const res = await fetch(`${API_BASE}/auth/me`, {
       headers: getAuthHeaders(),
+      credentials: 'include',
     });
     if (res.status === 401 || res.status === 403) {
-      const err = new Error('Unauthorized');
-      (err as any).status = 401;
-      throw err;
+      // Try transparent refresh!
+      try {
+        const refreshed = await this.refreshSession();
+        return refreshed.user;
+      } catch {
+        const err = new Error('Unauthorized');
+        (err as any).status = 401;
+        throw err;
+      }
     }
     if (!res.ok) {
       const err = new Error(`Server status: ${res.status}`);

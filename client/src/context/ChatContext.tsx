@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
-import type { User, Conversation, Message } from '../types';
+import type { User, Conversation, Message, SessionInfo } from '../types';
 import { api } from '../services/api';
 import { socketService } from '../services/socket';
 import { soundService } from '../services/sound';
@@ -12,6 +12,10 @@ interface ChatContextType {
   activeConversationId: string | null;
   activeConversation: Conversation | null;
   messages: Message[];
+  sessions: SessionInfo[];
+  loadSessions: () => Promise<void>;
+  revokeSession: (id: string) => Promise<void>;
+  revokeAllOtherSessions: () => Promise<void>;
   onlineUserIds: Set<string>;
   typingUsers: string[];
   loadingMessages: boolean;
@@ -60,6 +64,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return localStorage.getItem('pulse_active_conv_id');
   });
   const [messages, setMessages] = useState<Message[]>([]);
+  const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [onlineUserIds, setOnlineUserIds] = useState<Set<string>>(new Set());
   const [typingMap, setTypingMap] = useState<Record<string, Record<string, string>>>({}); // convId -> { userId: name }
   const [loadingMessages, setLoadingMessages] = useState<boolean>(false);
@@ -276,14 +281,53 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Check URL query parameters for OAuth callback token
+  // Check URL query parameters for OAuth callback (PKCE code exchange, cookie auth, or legacy token)
   useEffect(() => {
     const urlParams = new URLSearchParams(window.location.search);
-    const urlToken = urlParams.get('token');
-    if (urlToken) {
-      localStorage.setItem('token', urlToken);
-      setToken(urlToken);
-      window.history.replaceState({}, document.title, window.location.pathname);
+    const code = urlParams.get('code');
+    const codeVerifier = sessionStorage.getItem('pulse_pkce_verifier');
+
+    if (code && codeVerifier) {
+      setIsAuthInitializing(true);
+      const redirectUri = `${window.location.origin}/`;
+      api.exchangeAuthCode(code, codeVerifier, redirectUri)
+        .then((res) => {
+          sessionStorage.removeItem('pulse_pkce_verifier');
+          sessionStorage.removeItem('pulse_pkce_state');
+          setToken(res.token);
+          setCurrentUser(res.user);
+          socketService.connect(res.token);
+          window.history.replaceState({}, document.title, window.location.pathname);
+        })
+        .catch((err) => {
+          console.error('PKCE exchange error:', err);
+          window.history.replaceState({}, document.title, window.location.pathname);
+        })
+        .finally(() => {
+          setIsAuthInitializing(false);
+        });
+    } else if (urlParams.get('auth') === 'success') {
+      setIsAuthInitializing(true);
+      api.refreshSession()
+        .then((res) => {
+          setToken(res.token);
+          setCurrentUser(res.user);
+          socketService.connect(res.token);
+          window.history.replaceState({}, document.title, window.location.pathname);
+        })
+        .catch(() => {
+          window.history.replaceState({}, document.title, window.location.pathname);
+        })
+        .finally(() => {
+          setIsAuthInitializing(false);
+        });
+    } else if (urlParams.get('token')) {
+      const urlToken = urlParams.get('token');
+      if (urlToken) {
+        localStorage.setItem('token', urlToken);
+        setToken(urlToken);
+        window.history.replaceState({}, document.title, window.location.pathname);
+      }
     }
   }, []);
 
@@ -517,8 +561,12 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
     await refreshConversations();
   };
 
-  const logout = () => {
+  const logout = async () => {
+    try {
+      await api.logout();
+    } catch {}
     localStorage.removeItem('token');
+    localStorage.removeItem('pulse_refresh_token');
     localStorage.removeItem('pulse_active_conv_id');
     localStorage.removeItem('pulse_last_seq');
     localStorage.removeItem('pulse_server_epoch');
@@ -528,7 +576,53 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setCurrentUser(null);
     setActiveConversationId(null);
     setMessages([]);
+    setSessions([]);
     socketService.disconnect();
+  };
+
+  // Silently refresh access token every 10 minutes
+  useEffect(() => {
+    if (!currentUser || !token) return;
+
+    const interval = setInterval(async () => {
+      try {
+        const res = await api.refreshSession();
+        setToken(res.token);
+      } catch (err: any) {
+        if (err.tokenReused || err.status === 401) {
+          logout();
+        }
+      }
+    }, 10 * 60 * 1000);
+
+    return () => clearInterval(interval);
+  }, [currentUser, token]);
+
+  const loadSessions = useCallback(async () => {
+    try {
+      const data = await api.getSessions();
+      setSessions(data);
+    } catch (err) {
+      console.error('Failed to load sessions:', err);
+    }
+  }, []);
+
+  const revokeSession = async (sessionId: string) => {
+    try {
+      await api.revokeSession(sessionId);
+      setSessions((prev) => prev.filter((s) => s.id !== sessionId));
+    } catch (err) {
+      console.error('Failed to revoke session:', err);
+    }
+  };
+
+  const revokeAllOtherSessions = async () => {
+    try {
+      await api.revokeAllOtherSessions();
+      setSessions((prev) => prev.filter((s) => s.isCurrent));
+    } catch (err) {
+      console.error('Failed to revoke other sessions:', err);
+    }
   };
 
   const updateProfile = async (data: { username?: string; displayName?: string; avatarUrl?: string; statusText?: string; bio?: string; themeSettings?: any }) => {
@@ -751,6 +845,10 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
         activeConversationId,
         activeConversation,
         messages,
+        sessions,
+        loadSessions,
+        revokeSession,
+        revokeAllOtherSessions,
         onlineUserIds,
         typingUsers: activeTyping,
         loadingMessages,

@@ -1,11 +1,106 @@
-import { Router } from 'express';
+import { Router, Request, Response, NextFunction } from 'express';
 import crypto from 'crypto';
 import { db } from '../db.js';
-import { hashPassword, verifyPassword, signToken, requireAuth, AuthenticatedRequest } from '../auth.js';
+import {
+  hashPassword,
+  verifyPassword,
+  signAccessToken,
+  createSession,
+  rotateRefreshToken,
+  revokeSession,
+  revokeAllOtherSessions,
+  getUserSessions,
+  createAuthCode,
+  exchangeAuthCode,
+  parseDeviceInfo,
+  requireAuth,
+  AuthenticatedRequest,
+} from '../auth.js';
 
 export const authRouter = Router();
 
-authRouter.post('/register', async (req, res) => {
+// ============================================================================
+// RATE LIMITER FOR AUTH ENDPOINTS (prevents brute-force on passwords and codes)
+// ============================================================================
+interface RateLimitRecord {
+  count: number;
+  resetAt: number;
+}
+const authRateLimits = new Map<string, RateLimitRecord>();
+
+function authRateLimiter(maxRequests: number = 30, windowMs: number = 60 * 1000) {
+  return (req: Request, res: Response, next: NextFunction) => {
+    const ip = req.ip || req.socket.remoteAddress || 'unknown';
+    const now = Date.now();
+    const record = authRateLimits.get(ip);
+
+    if (!record || now > record.resetAt) {
+      authRateLimits.set(ip, { count: 1, resetAt: now + windowMs });
+      return next();
+    }
+
+    record.count++;
+    if (record.count > maxRequests) {
+      const waitSeconds = Math.ceil((record.resetAt - now) / 1000);
+      return res.status(429).json({
+        error: `Слишком много запросов авторизации. Повторите попытку через ${waitSeconds} сек.`,
+      });
+    }
+
+    next();
+  };
+}
+
+// Cleanup rate limiter map every 5 minutes
+setInterval(() => {
+  const now = Date.now();
+  for (const [ip, rec] of authRateLimits.entries()) {
+    if (now > rec.resetAt) authRateLimits.delete(ip);
+  }
+}, 5 * 60 * 1000);
+
+// Helper for setting secure refresh cookie
+function setRefreshCookie(res: Response, refreshToken: string) {
+  const isProduction = process.env.NODE_ENV === 'production';
+  res.cookie('pulse_refresh_token', refreshToken, {
+    httpOnly: true,
+    secure: isProduction,
+    sameSite: isProduction ? 'lax' : 'lax',
+    maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
+    path: '/api/auth',
+  });
+}
+
+function clearRefreshCookie(res: Response) {
+  res.clearCookie('pulse_refresh_token', {
+    httpOnly: true,
+    path: '/api/auth',
+  });
+}
+
+// Allowed redirect URIs for PKCE OAuth exchange
+const ALLOWED_REDIRECT_URIS = [
+  'https://pulse-chat-qel7.onrender.com/auth/callback',
+  'https://pulse-chat-qel7.onrender.com/',
+  'http://localhost:5173/auth/callback',
+  'http://localhost:5173/',
+  'http://localhost:3001/auth/callback',
+  'pulsechat://auth/callback',
+  'pulsechat://',
+  'app://pulsechat/auth/callback',
+  'app://pulse/auth/callback',
+  'capacitor://localhost/auth/callback',
+];
+
+function isAllowedRedirectUri(uri: string): boolean {
+  if (!uri) return false;
+  return ALLOWED_REDIRECT_URIS.some((allowed) => uri === allowed || uri.startsWith(allowed));
+}
+
+// ============================================================================
+// 1. REGISTRATION
+// ============================================================================
+authRouter.post('/register', authRateLimiter(20), async (req, res) => {
   const { username, password, displayName, avatarUrl } = req.body;
 
   if (!username || !password || !displayName) {
@@ -30,16 +125,22 @@ authRouter.post('/register', async (req, res) => {
     const userId = crypto.randomUUID();
     const passwordHash = hashPassword(password);
     const finalAvatar = avatarUrl || `https://api.dicebear.com/7.x/bottts/svg?seed=${cleanUsername}`;
+    const now = new Date().toISOString();
 
     await db.run(`
-      INSERT INTO users (id, username, display_name, password_hash, avatar_url)
-      VALUES (?, ?, ?, ?, ?)
-    `, userId, cleanUsername, displayName.trim(), passwordHash, finalAvatar);
+      INSERT INTO users (id, username, display_name, password_hash, avatar_url, created_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `, userId, cleanUsername, displayName.trim(), passwordHash, finalAvatar, now);
 
-    const token = signToken({ userId, username: cleanUsername });
+    const deviceInfo = parseDeviceInfo(req.headers['user-agent']);
+    const ip = req.ip || req.socket.remoteAddress || '';
+    const session = await createSession(userId, deviceInfo, ip);
+
+    setRefreshCookie(res, session.refreshToken);
 
     res.json({
-      token,
+      token: session.accessToken,
+      refreshToken: session.refreshToken,
       user: {
         id: userId,
         username: cleanUsername,
@@ -54,7 +155,10 @@ authRouter.post('/register', async (req, res) => {
   }
 });
 
-authRouter.post('/login', async (req, res) => {
+// ============================================================================
+// 2. LOGIN
+// ============================================================================
+authRouter.post('/login', authRateLimiter(25), async (req, res) => {
   const { username, password } = req.body;
 
   if (!username || !password) {
@@ -74,16 +178,21 @@ authRouter.post('/login', async (req, res) => {
       return res.status(400).json({ error: 'Неверное имя пользователя или пароль' });
     }
 
-    const token = signToken({ userId: user.id, username: user.username });
+    const deviceInfo = parseDeviceInfo(req.headers['user-agent']);
+    const ip = req.ip || req.socket.remoteAddress || '';
+    const session = await createSession(user.id, deviceInfo, ip);
+
+    setRefreshCookie(res, session.refreshToken);
 
     res.json({
-      token,
+      token: session.accessToken,
+      refreshToken: session.refreshToken,
       user: {
         id: user.id,
         username: user.username,
         displayName: user.display_name,
         avatarUrl: user.avatar_url,
-        statusText: user.status_text,
+        statusText: user.status_text || '',
       },
     });
   } catch (err: any) {
@@ -92,7 +201,10 @@ authRouter.post('/login', async (req, res) => {
   }
 });
 
-authRouter.post('/social', async (req, res) => {
+// ============================================================================
+// 3. SOCIAL LOGIN (TELEGRAM / GOOGLE / GITHUB IN-APP)
+// ============================================================================
+authRouter.post('/social', authRateLimiter(30), async (req, res) => {
   const { provider, data } = req.body;
   if (!provider || !data || !data.id) {
     return res.status(400).json({ error: 'Не переданы данные провайдера' });
@@ -124,11 +236,9 @@ authRouter.post('/social', async (req, res) => {
   }
 
   try {
-    // Find existing user by provider and providerId
     let user = await db.get<any>('SELECT * FROM users WHERE auth_provider = ? AND provider_id = ?', provider, providerId);
 
     if (!user) {
-      // Generate clean unique username
       let baseUsername = (data.username || `${provider}_${providerId}`).trim().toLowerCase().replace(/[^a-z0-9_]/g, '');
       if (baseUsername.length < 3) baseUsername = `${provider}_user`;
 
@@ -141,13 +251,13 @@ authRouter.post('/social', async (req, res) => {
       const userId = crypto.randomUUID();
       const displayName = (data.displayName || data.first_name || finalUsername).trim();
       const avatarUrl = data.avatarUrl || data.photo_url || `https://api.dicebear.com/7.x/bottts/svg?seed=${finalUsername}`;
-      // Random secure password hash so social accounts cannot be logged into with a blank password
       const passwordHash = hashPassword(crypto.randomBytes(32).toString('hex'));
+      const now = new Date().toISOString();
 
       await db.run(`
-        INSERT INTO users (id, username, display_name, password_hash, avatar_url, auth_provider, provider_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-      `, userId, finalUsername, displayName, passwordHash, avatarUrl, provider, providerId);
+        INSERT INTO users (id, username, display_name, password_hash, avatar_url, auth_provider, provider_id, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `, userId, finalUsername, displayName, passwordHash, avatarUrl, provider, providerId, now);
 
       user = {
         id: userId,
@@ -158,10 +268,15 @@ authRouter.post('/social', async (req, res) => {
       };
     }
 
-    const token = signToken({ userId: user.id, username: user.username });
+    const deviceInfo = parseDeviceInfo(req.headers['user-agent']);
+    const ip = req.ip || req.socket.remoteAddress || '';
+    const session = await createSession(user.id, deviceInfo, ip);
+
+    setRefreshCookie(res, session.refreshToken);
 
     res.json({
-      token,
+      token: session.accessToken,
+      refreshToken: session.refreshToken,
       user: {
         id: user.id,
         username: user.username,
@@ -176,6 +291,159 @@ authRouter.post('/social', async (req, res) => {
   }
 });
 
+// ============================================================================
+// 4. TOKEN REFRESH (With Family Rotation & Reuse Detection)
+// ============================================================================
+authRouter.post('/refresh', authRateLimiter(60), async (req, res) => {
+  // Read refresh token from httpOnly cookie, X-Refresh-Token header, or request body
+  const rawRefreshToken =
+    req.cookies?.pulse_refresh_token ||
+    (req.headers['x-refresh-token'] as string) ||
+    req.body?.refreshToken;
+
+  if (!rawRefreshToken) {
+    return res.status(401).json({ error: 'Refresh-токен отсутствует' });
+  }
+
+  const deviceInfo = parseDeviceInfo(req.headers['user-agent']);
+  const ip = req.ip || req.socket.remoteAddress || '';
+
+  try {
+    const rotation = await rotateRefreshToken(rawRefreshToken, deviceInfo, ip);
+
+    if (!rotation.success) {
+      clearRefreshCookie(res);
+      if (rotation.reason === 'reused') {
+        return res.status(401).json({
+          error: 'Обнаружено повторное использование токена. В целях безопасности все сессии сброшены.',
+          tokenReused: true,
+        });
+      }
+      return res.status(401).json({ error: 'Недействительный или просроченный refresh-токен' });
+    }
+
+    // Set new rotated refresh token in cookie
+    setRefreshCookie(res, rotation.refreshToken);
+
+    // Fetch user details
+    const user = await db.get<any>(
+      'SELECT id, username, display_name, avatar_url, status_text FROM users WHERE id = ?',
+      rotation.userId
+    );
+
+    res.json({
+      token: rotation.accessToken,
+      refreshToken: rotation.refreshToken,
+      user: {
+        id: user.id,
+        username: user.username,
+        displayName: user.display_name,
+        avatarUrl: user.avatar_url,
+        statusText: user.status_text || '',
+      },
+    });
+  } catch (err) {
+    console.error('Refresh token error:', err);
+    clearRefreshCookie(res);
+    res.status(500).json({ error: 'Ошибка обновления токена' });
+  }
+});
+
+// ============================================================================
+// 5. LOGOUT (Revokes Current Session)
+// ============================================================================
+authRouter.post('/logout', async (req: AuthenticatedRequest, res) => {
+  const rawRefreshToken =
+    req.cookies?.pulse_refresh_token ||
+    (req.headers['x-refresh-token'] as string) ||
+    req.body?.refreshToken;
+
+  clearRefreshCookie(res);
+
+  if (rawRefreshToken) {
+    const tokenHash = crypto.createHash('sha256').update(rawRefreshToken).digest('hex');
+    await db.run('UPDATE refresh_tokens SET is_revoked = 1 WHERE token_hash = ?', tokenHash);
+  }
+
+  if (req.sessionId && req.user?.userId) {
+    await revokeSession(req.sessionId, req.user.userId);
+  }
+
+  res.json({ success: true, message: 'Сессия завершена' });
+});
+
+// ============================================================================
+// 6. ACTIVE SESSIONS MANAGEMENT (Для раздела «Устройства»)
+// ============================================================================
+authRouter.get('/sessions', requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const sessions = await getUserSessions(req.user!.userId, req.sessionId);
+    res.json(sessions);
+  } catch (err) {
+    console.error('Fetch sessions error:', err);
+    res.status(500).json({ error: 'Не удалось загрузить список устройств' });
+  }
+});
+
+authRouter.delete('/sessions/:id', requireAuth, async (req: AuthenticatedRequest, res) => {
+  const sessionId = req.params.id;
+  try {
+    const revoked = await revokeSession(sessionId, req.user!.userId);
+    if (!revoked) {
+      return res.status(404).json({ error: 'Сессия не найдена' });
+    }
+    res.json({ success: true, message: 'Сессия успешно отозвана' });
+  } catch (err) {
+    console.error('Revoke session error:', err);
+    res.status(500).json({ error: 'Не удалось отозвать сессию' });
+  }
+});
+
+authRouter.delete('/sessions', requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const currentSessionId = req.sessionId || '';
+    const count = await revokeAllOtherSessions(currentSessionId, req.user!.userId);
+    res.json({ success: true, count, message: `Завершено других сессий: ${count}` });
+  } catch (err) {
+    console.error('Revoke other sessions error:', err);
+    res.status(500).json({ error: 'Не удалось завершить другие сессии' });
+  }
+});
+
+// ============================================================================
+// 7. PKCE AUTHORIZATION CODE EXCHANGE (POST /api/auth/exchange)
+// ============================================================================
+authRouter.post('/exchange', authRateLimiter(30), async (req, res) => {
+  const { code, code_verifier, redirect_uri } = req.body;
+
+  if (!code || !code_verifier || !redirect_uri) {
+    return res.status(400).json({ error: 'Параметры code, code_verifier и redirect_uri обязательны' });
+  }
+
+  const deviceInfo = parseDeviceInfo(req.headers['user-agent']);
+  const ip = req.ip || req.socket.remoteAddress || '';
+
+  try {
+    const result = await exchangeAuthCode(code, code_verifier, redirect_uri, deviceInfo, ip);
+
+    if (!result.success) {
+      return res.status(result.status).json({ error: result.error });
+    }
+
+    setRefreshCookie(res, result.refreshToken);
+
+    res.json({
+      token: result.accessToken,
+      refreshToken: result.refreshToken,
+      user: result.user,
+    });
+  } catch (err) {
+    console.error('Exchange error:', err);
+    res.status(500).json({ error: 'Ошибка обмена кода авторизации' });
+  }
+});
+
+// Public providers configuration
 authRouter.get('/providers', (_req, res) => {
   res.json({
     telegramBotName: process.env.TELEGRAM_BOT_NAME || '',
@@ -184,7 +452,7 @@ authRouter.get('/providers', (_req, res) => {
   });
 });
 
-// Helper for upserting OAuth user and returning token
+// Helper for upserting OAuth user
 async function upsertOAuthUser(provider: string, providerId: string, usernameBase: string, displayName: string, avatarUrl: string): Promise<string> {
   let user = await db.get<any>('SELECT * FROM users WHERE auth_provider = ? AND provider_id = ?', provider, providerId);
 
@@ -200,92 +468,102 @@ async function upsertOAuthUser(provider: string, providerId: string, usernameBas
 
     const userId = crypto.randomUUID();
     const passwordHash = hashPassword(crypto.randomBytes(32).toString('hex'));
+    const now = new Date().toISOString();
 
     await db.run(`
-      INSERT INTO users (id, username, display_name, password_hash, avatar_url, auth_provider, provider_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `, userId, finalUsername, displayName.trim() || finalUsername, passwordHash, avatarUrl, provider, providerId);
+      INSERT INTO users (id, username, display_name, password_hash, avatar_url, auth_provider, provider_id, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `, userId, finalUsername, displayName.trim() || finalUsername, passwordHash, avatarUrl, provider, providerId, now);
 
     user = { id: userId, username: finalUsername };
   }
 
-  return signToken({ userId: user.id, username: user.username });
+  return user.id;
 }
 
-// -------------------------------------------------------------
-// REAL OAUTH 2.0 BROWSER REDIRECT FLOWS
-// -------------------------------------------------------------
+// Helper to redirect OAuth callback securely without tokens in URL:
+// If PKCE was initiated, creates one-time auth code and redirects to ${redirect_uri}?code=${code}&state=${state}
+// If direct browser without PKCE, sets httpOnly cookie and redirects cleanly to /?auth=success
+async function completeOAuthRedirect(
+  req: Request,
+  res: Response,
+  userId: string,
+  state?: string,
+  codeChallenge?: string,
+  codeChallengeMethod?: string,
+  redirectUri?: string
+) {
+  const targetRedirectUri = redirectUri && isAllowedRedirectUri(redirectUri) ? redirectUri : '';
 
-// 1. GitHub OAuth Redirect
+  if (targetRedirectUri && codeChallenge) {
+    // Standard OAuth 2.0 PKCE redirect (Windows/Android app or external web client)
+    const code = await createAuthCode(userId, codeChallenge, codeChallengeMethod || 'S256', targetRedirectUri);
+    const redirectUrl = new URL(targetRedirectUri);
+    redirectUrl.searchParams.set('code', code);
+    if (state) redirectUrl.searchParams.set('state', state);
+    return res.redirect(redirectUrl.toString());
+  }
+
+  // Web browser login without PKCE: create session and set httpOnly cookie.
+  // NEVER put tokens in the URL!
+  const deviceInfo = parseDeviceInfo(req.headers['user-agent']);
+  const ip = req.ip || req.socket.remoteAddress || '';
+  const session = await createSession(userId, deviceInfo, ip);
+
+  setRefreshCookie(res, session.refreshToken);
+  res.redirect('/?auth=success');
+}
+
+// ============================================================================
+// 8. OAUTH REDIRECTS (GitHub, Google, Telegram) - ZERO TOKENS IN URL!
+// ============================================================================
+
+// --- GITHUB ---
 authRouter.get('/github', (req, res) => {
   const clientId = process.env.GITHUB_CLIENT_ID;
+  const { redirect_uri, code_challenge, code_challenge_method, state } = req.query as any;
+
+  // Preserve state & PKCE across OAuth flow
+  const oauthState = JSON.stringify({
+    state: state || '',
+    redirect_uri: redirect_uri || '',
+    code_challenge: code_challenge || '',
+    code_challenge_method: code_challenge_method || 'S256',
+  });
+  const encodedState = Buffer.from(oauthState).toString('base64url');
+
   if (clientId) {
     const host = req.get('host');
     const protocol = req.protocol === 'https' || req.headers['x-forwarded-proto'] === 'https' ? 'https' : 'http';
-    const redirectUri = encodeURIComponent(`${protocol}://${host}/api/auth/github/callback`);
-    return res.redirect(`https://github.com/login/oauth/authorize?client_id=${clientId}&redirect_uri=${redirectUri}&scope=read:user%20user:email`);
+    const callbackUri = encodeURIComponent(`${protocol}://${host}/api/auth/github/callback`);
+    return res.redirect(
+      `https://github.com/login/oauth/authorize?client_id=${clientId}&redirect_uri=${callbackUri}&scope=read:user%20user:email&state=${encodedState}`
+    );
   }
 
-  // Authentic GitHub OAuth Browser Screen
+  // Local/Dev screen
   res.send(`
     <!DOCTYPE html>
     <html lang="ru">
     <head>
       <meta charset="UTF-8">
-      <meta name="viewport" content="width=device-width, initial-scale=1.0">
       <title>Authorize PulseChat · GitHub</title>
       <style>
-        body { margin: 0; background-color: #0d1117; color: #c9d1d9; font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif; display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 20px; box-sizing: border-box; }
-        .card { background: #161b22; border: 1px solid #30363d; border-radius: 12px; width: 100%; max-width: 440px; padding: 32px; box-shadow: 0 16px 32px rgba(1,4,9,0.85); text-align: center; }
-        .logos { display: flex; align-items: center; justify-content: center; gap: 16px; margin-bottom: 24px; }
-        .logo-box { width: 56px; height: 56px; border-radius: 50%; background: #21262d; border: 1px solid #30363d; display: flex; align-items: center; justify-content: center; }
-        .logo-box svg { width: 32px; height: 32px; fill: #f0f6fc; }
-        .arrow { color: #8b949e; font-size: 20px; }
-        h1 { font-size: 20px; font-weight: 600; color: #f0f6fc; margin: 0 0 8px; }
-        p.sub { font-size: 13px; color: #8b949e; margin: 0 0 24px; }
-        .permissions { text-align: left; background: #0d1117; border: 1px solid #30363d; border-radius: 8px; padding: 16px; margin-bottom: 24px; font-size: 13px; }
-        .perm-item { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 8px; color: #e6edf3; }
-        .perm-item:last-child { margin-bottom: 0; }
-        .check { color: #3fb950; font-weight: bold; }
-        .btn-green { display: block; width: 100%; background: #238636; border: 1px solid rgba(240,246,252,0.1); color: #ffffff; padding: 12px; font-size: 14px; font-weight: 600; border-radius: 6px; cursor: pointer; text-decoration: none; box-sizing: border-box; margin-bottom: 12px; transition: background 0.2s; }
-        .btn-green:hover { background: #2ea043; }
-        .btn-cancel { display: block; width: 100%; background: transparent; border: 1px solid #30363d; color: #f85149; padding: 10px; font-size: 14px; font-weight: 500; border-radius: 6px; cursor: pointer; text-decoration: none; box-sizing: border-box; }
-        .btn-cancel:hover { background: #21262d; }
-        .custom-name { width: 100%; background: #0d1117; border: 1px solid #30363d; color: #fff; padding: 10px; border-radius: 6px; font-size: 13px; box-sizing: border-box; margin-bottom: 16px; text-align: center; }
+        body { margin: 0; background: #0d1117; color: #c9d1d9; font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif; display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 20px; }
+        .card { background: #161b22; border: 1px solid #30363d; border-radius: 12px; width: 100%; max-width: 440px; padding: 32px; text-align: center; }
+        h1 { font-size: 20px; color: #f0f6fc; margin: 0 0 16px; }
+        input { width: 100%; background: #0d1117; border: 1px solid #30363d; color: #fff; padding: 10px; border-radius: 6px; margin-bottom: 16px; box-sizing: border-box; }
+        .btn { width: 100%; background: #238636; border: none; color: #fff; padding: 12px; border-radius: 6px; font-weight: 600; cursor: pointer; }
       </style>
     </head>
     <body>
       <div class="card">
-        <div class="logos">
-          <div class="logo-box">
-            <svg viewBox="0 0 24 24"><path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.53 1.032 1.53 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"></path></svg>
-          </div>
-          <span class="arrow">⇄</span>
-          <div class="logo-box" style="background:#6366f1;">
-            <span style="font-size:24px;">💬</span>
-          </div>
-        </div>
-
-        <h1>Авторизовать PulseChat</h1>
-        <p class="sub">Приложение запрашивает доступ к вашему GitHub аккаунту</p>
-
+        <h1>Авторизовать PulseChat (GitHub)</h1>
         <form action="/api/auth/github/callback" method="GET">
-          <input type="text" name="custom_name" value="romaleks098" class="custom-name" placeholder="Ваш GitHub логин">
+          <input type="text" name="custom_name" value="romaleks098" placeholder="Ваш GitHub логин">
           <input type="hidden" name="direct_auth" value="true">
-
-          <div class="permissions">
-            <div class="perm-item">
-              <span class="check">✓</span>
-              <span>Доступ к вашему публичному профилю и аватару</span>
-            </div>
-            <div class="perm-item">
-              <span class="check">✓</span>
-              <span>Адрес электронной почты (только чтение)</span>
-            </div>
-          </div>
-
-          <button type="submit" class="btn-green">Авторизовать PulseChat</button>
-          <a href="/" class="btn-cancel">Отмена</a>
+          <input type="hidden" name="state" value="${encodedState}">
+          <button type="submit" class="btn">Войти через GitHub</button>
         </form>
       </div>
     </body>
@@ -297,21 +575,41 @@ authRouter.get('/github/callback', async (req, res) => {
   const code = req.query.code as string;
   const directAuth = req.query.direct_auth as string;
   const customName = (req.query.custom_name as string) || 'romaleks098';
+  const encodedState = req.query.state as string;
 
-  // Direct Browser OAuth flow
+  let stateData: any = {};
+  if (encodedState) {
+    try {
+      stateData = JSON.parse(Buffer.from(encodedState, 'base64url').toString('utf-8'));
+    } catch {}
+  }
+
+  const codeChallenge = stateData.code_challenge || (req.query.code_challenge as string);
+  const codeChallengeMethod = stateData.code_challenge_method || (req.query.code_challenge_method as string);
+  const redirectUri = stateData.redirect_uri || (req.query.redirect_uri as string);
+  const stateVal = stateData.state || (req.query.state as string);
+
+  // Direct Dev Auth flow
   if (directAuth) {
     const cleanUser = customName.trim().replace(/[^a-zA-Z0-9_-]/g, '') || 'github_user';
-    const token = await upsertOAuthUser(
+    const userId = await upsertOAuthUser(
       'github',
       `gh_${cleanUser}`,
       cleanUser,
       cleanUser,
       `https://github.com/${cleanUser}.png`
     );
-    return res.redirect(`/?token=${token}`);
+    return completeOAuthRedirect(
+      req,
+      res,
+      userId,
+      stateVal,
+      codeChallenge,
+      codeChallengeMethod,
+      redirectUri
+    );
   }
 
-  // Real GitHub API Exchange if code passed
   const clientId = process.env.GITHUB_CLIENT_ID;
   const clientSecret = process.env.GITHUB_CLIENT_SECRET;
 
@@ -322,28 +620,18 @@ authRouter.get('/github/callback', async (req, res) => {
   try {
     const tokenRes = await fetch('https://github.com/login/oauth/access_token', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Accept: 'application/json',
-      },
-      body: JSON.stringify({
-        client_id: clientId,
-        client_secret: clientSecret,
-        code,
-      }),
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify({ client_id: clientId, client_secret: clientSecret, code }),
     });
-    const tokenData = await tokenRes.json() as any;
+    const tokenData = (await tokenRes.json()) as any;
     if (!tokenData.access_token) throw new Error('No access token');
 
     const userRes = await fetch('https://api.github.com/user', {
-      headers: {
-        Authorization: `Bearer ${tokenData.access_token}`,
-        'User-Agent': 'PulseChat-App',
-      },
+      headers: { Authorization: `Bearer ${tokenData.access_token}`, 'User-Agent': 'PulseChat-App' },
     });
-    const ghUser = await userRes.json() as any;
+    const ghUser = (await userRes.json()) as any;
 
-    const token = await upsertOAuthUser(
+    const userId = await upsertOAuthUser(
       'github',
       String(ghUser.id),
       ghUser.login,
@@ -351,86 +639,67 @@ authRouter.get('/github/callback', async (req, res) => {
       ghUser.avatar_url || `https://github.com/${ghUser.login}.png`
     );
 
-    res.redirect(`/?token=${token}`);
+    return completeOAuthRedirect(
+      req,
+      res,
+      userId,
+      stateVal,
+      codeChallenge,
+      codeChallengeMethod,
+      redirectUri
+    );
   } catch (err) {
     console.error('GitHub OAuth error:', err);
     res.redirect('/?oauth_error=github_failed');
   }
 });
 
-// 2. Google OAuth 2.0 Redirect
+// --- GOOGLE ---
 authRouter.get('/google', (req, res) => {
   const clientId = process.env.GOOGLE_CLIENT_ID;
+  const { redirect_uri, code_challenge, code_challenge_method, state } = req.query as any;
+
+  const oauthState = JSON.stringify({
+    state: state || '',
+    redirect_uri: redirect_uri || '',
+    code_challenge: code_challenge || '',
+    code_challenge_method: code_challenge_method || 'S256',
+  });
+  const encodedState = Buffer.from(oauthState).toString('base64url');
+
   if (clientId) {
     const host = req.get('host');
     const protocol = req.protocol === 'https' || req.headers['x-forwarded-proto'] === 'https' ? 'https' : 'http';
-    const redirectUri = encodeURIComponent(`${protocol}://${host}/api/auth/google/callback`);
+    const callbackUri = encodeURIComponent(`${protocol}://${host}/api/auth/google/callback`);
 
     return res.redirect(
-      `https://accounts.google.com/o/oauth2/v2/auth?client_id=${clientId}&redirect_uri=${redirectUri}&response_type=code&scope=openid%20profile%20email&access_type=offline`
+      `https://accounts.google.com/o/oauth2/v2/auth?client_id=${clientId}&redirect_uri=${callbackUri}&response_type=code&scope=openid%20profile%20email&access_type=offline&state=${encodedState}`
     );
   }
 
-  // Authentic Google Sign-in Browser Screen
+  // Local/Dev screen
   res.send(`
     <!DOCTYPE html>
     <html lang="ru">
     <head>
       <meta charset="UTF-8">
-      <meta name="viewport" content="width=device-width, initial-scale=1.0">
       <title>Вход с помощью аккаунта Google</title>
       <style>
-        body { margin: 0; background: #ffffff; color: #1f1f1f; font-family: 'Google Sans', Roboto, Arial, sans-serif; display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 20px; box-sizing: border-box; }
-        .card { width: 100%; max-width: 440px; padding: 40px; border: 1px solid #dadce0; border-radius: 28px; text-align: center; box-sizing: border-box; box-shadow: 0 4px 12px rgba(0,0,0,0.05); }
-        .google-logo { width: 44px; height: 44px; margin-bottom: 16px; }
-        h1 { font-size: 24px; font-weight: 500; margin: 0 0 10px; color: #1f1f1f; }
-        p.sub { font-size: 14px; color: #444746; margin: 0 0 28px; }
-        .account-item { display: flex; align-items: center; gap: 14px; padding: 12px 14px; border: 1px solid #e0e2ec; border-radius: 12px; margin-bottom: 12px; text-align: left; cursor: pointer; text-decoration: none; color: inherit; transition: background 0.15s; }
-        .account-item:hover { background: #f0f4f9; border-color: #c4c7c5; }
-        .avatar { width: 40px; height: 40px; border-radius: 50%; background: #e8f0fe; display: flex; align-items: center; justify-content: center; font-weight: 600; color: #1a73e8; font-size: 16px; }
-        .acc-info { flex: 1; min-width: 0; }
-        .acc-name { font-size: 14px; font-weight: 500; color: #1f1f1f; }
-        .acc-email { font-size: 12px; color: #444746; truncate: true; }
-        .footer { margin-top: 28px; font-size: 12px; color: #747775; text-align: left; line-height: 1.5; }
-        .footer a { color: #0b57d0; text-decoration: none; }
-        .custom-input { width: 100%; border: 1px solid #747775; border-radius: 8px; padding: 12px 14px; font-size: 14px; box-sizing: border-box; margin-bottom: 16px; }
-        .custom-input:focus { outline: 2px solid #0b57d0; border-color: transparent; }
-        .btn-submit { width: 100%; background: #0b57d0; color: #fff; border: none; padding: 12px; border-radius: 100px; font-size: 14px; font-weight: 500; cursor: pointer; transition: background 0.2s; }
-        .btn-submit:hover { background: #0842a0; }
+        body { margin: 0; background: #ffffff; color: #1f1f1f; font-family: 'Google Sans', Roboto, sans-serif; display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 20px; }
+        .card { width: 100%; max-width: 440px; padding: 40px; border: 1px solid #dadce0; border-radius: 28px; text-align: center; }
+        input { width: 100%; border: 1px solid #747775; border-radius: 8px; padding: 12px; margin-bottom: 16px; box-sizing: border-box; }
+        .btn { width: 100%; background: #0b57d0; color: #fff; border: none; padding: 12px; border-radius: 100px; font-weight: 500; cursor: pointer; }
       </style>
     </head>
     <body>
       <div class="card">
-        <svg class="google-logo" viewBox="0 0 24 24">
-          <path fill="#4285F4" d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v4.51h6.6c-.29 1.52-1.14 2.82-2.4 3.68v3.05h3.88c2.27-2.09 3.665-5.17 3.665-9.17z"/>
-          <path fill="#34A853" d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.88-3.05c-1.08.72-2.45 1.16-4.05 1.16-3.12 0-5.77-2.1-6.72-4.93H1.25v3.15C3.26 21.36 7.33 24 12 24z"/>
-          <path fill="#FBBC05" d="M5.28 14.27c-.25-.72-.38-1.49-.38-2.27s.13-1.55.38-2.27V6.58H1.25C.45 8.18 0 10.04 0 12s.45 3.82 1.25 5.42l4.03-3.15z"/>
-          <path fill="#EA4335" d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.33 0 3.26 2.64 1.25 6.58l4.03 3.15c.95-2.83 3.6-4.98 6.72-4.98z"/>
-        </svg>
-
         <h1>Вход с аккаунтом Google</h1>
-        <p class="sub">Выберите аккаунт для перехода в PulseChat</p>
-
-        <!-- Ready account option 1 -->
-        <a href="/api/auth/google/callback?direct_auth=true&email=romaleks098@gmail.com&name=%D0%A0%D0%BE%D0%BC%D0%B0%D0%BD" class="account-item">
-          <div class="avatar">Р</div>
-          <div class="acc-info">
-            <div class="acc-name">Роман</div>
-            <div class="acc-email">romaleks098@gmail.com</div>
-          </div>
-        </a>
-
-        <!-- Or custom email form -->
-        <form action="/api/auth/google/callback" method="GET" style="margin-top: 16px;">
+        <form action="/api/auth/google/callback" method="GET">
           <input type="hidden" name="direct_auth" value="true">
-          <input type="email" name="email" class="custom-input" placeholder="Или укажите ваш Google email..." required>
-          <input type="hidden" name="name" value="Пользователь Google">
-          <button type="submit" class="btn-submit">Войти с этим аккаунтом</button>
+          <input type="hidden" name="state" value="${encodedState}">
+          <input type="email" name="email" value="romaleks098@gmail.com" placeholder="Ваш Google email..." required>
+          <button type="submit" class="btn">Войти с этим аккаунтом</button>
         </form>
-
-        <div class="footer">
-          Чтобы продолжить, Google предоставит приложению <b>PulseChat</b> ваше имя, адрес электронной почты и фотографию профиля.
-        </div>
       </div>
     </body>
     </html>
@@ -442,21 +711,40 @@ authRouter.get('/google/callback', async (req, res) => {
   const directAuth = req.query.direct_auth as string;
   const email = (req.query.email as string) || 'google_user@gmail.com';
   const name = (req.query.name as string) || email.split('@')[0];
+  const encodedState = req.query.state as string;
 
-  // Direct Browser OAuth flow
+  let stateData: any = {};
+  if (encodedState) {
+    try {
+      stateData = JSON.parse(Buffer.from(encodedState, 'base64url').toString('utf-8'));
+    } catch {}
+  }
+
+  const codeChallenge = stateData.code_challenge || (req.query.code_challenge as string);
+  const codeChallengeMethod = stateData.code_challenge_method || (req.query.code_challenge_method as string);
+  const redirectUri = stateData.redirect_uri || (req.query.redirect_uri as string);
+  const stateVal = stateData.state || (req.query.state as string);
+
   if (directAuth) {
     const cleanUser = email.split('@')[0].replace(/[^a-zA-Z0-9_-]/g, '') || 'google_user';
-    const token = await upsertOAuthUser(
+    const userId = await upsertOAuthUser(
       'google',
       `google_${cleanUser}`,
       cleanUser,
       name,
       `https://api.dicebear.com/7.x/identicon/svg?seed=${cleanUser}`
     );
-    return res.redirect(`/?token=${token}`);
+    return completeOAuthRedirect(
+      req,
+      res,
+      userId,
+      stateVal,
+      codeChallenge,
+      codeChallengeMethod,
+      redirectUri
+    );
   }
 
-  // Real Google API Exchange if code passed
   const clientId = process.env.GOOGLE_CLIENT_ID;
   const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
 
@@ -480,15 +768,15 @@ authRouter.get('/google/callback', async (req, res) => {
         grant_type: 'authorization_code',
       }),
     });
-    const tokenData = await tokenRes.json() as any;
+    const tokenData = (await tokenRes.json()) as any;
     if (!tokenData.access_token) throw new Error('No Google token');
 
     const profileRes = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
       headers: { Authorization: `Bearer ${tokenData.access_token}` },
     });
-    const gUser = await profileRes.json() as any;
+    const gUser = (await profileRes.json()) as any;
 
-    const token = await upsertOAuthUser(
+    const userId = await upsertOAuthUser(
       'google',
       gUser.id,
       gUser.email ? gUser.email.split('@')[0] : `google_${gUser.id}`,
@@ -496,62 +784,54 @@ authRouter.get('/google/callback', async (req, res) => {
       gUser.picture || `https://api.dicebear.com/7.x/identicon/svg?seed=${gUser.id}`
     );
 
-    res.redirect(`/?token=${token}`);
+    return completeOAuthRedirect(
+      req,
+      res,
+      userId,
+      stateVal,
+      codeChallenge,
+      codeChallengeMethod,
+      redirectUri
+    );
   } catch (err) {
     console.error('Google OAuth error:', err);
     res.redirect('/?oauth_error=google_failed');
   }
 });
 
-// 3. Telegram Login Redirect
-authRouter.get('/telegram', (_req, res) => {
-  // Authentic Telegram Browser Login Screen
+// --- TELEGRAM ---
+authRouter.get('/telegram', (req, res) => {
+  const { redirect_uri, code_challenge, code_challenge_method, state } = req.query as any;
+  const oauthState = JSON.stringify({
+    state: state || '',
+    redirect_uri: redirect_uri || '',
+    code_challenge: code_challenge || '',
+    code_challenge_method: code_challenge_method || 'S256',
+  });
+  const encodedState = Buffer.from(oauthState).toString('base64url');
+
   res.send(`
     <!DOCTYPE html>
     <html lang="ru">
     <head>
       <meta charset="UTF-8">
-      <meta name="viewport" content="width=device-width, initial-scale=1.0">
-      <title>Авторизация через Telegram · PulseChat</title>
+      <title>Вход через Telegram · PulseChat</title>
       <style>
-        body { margin: 0; background: #0f141c; color: #ffffff; font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 20px; box-sizing: border-box; }
-        .card { width: 100%; max-width: 400px; padding: 36px; background: #17212b; border: 1px solid #242f3d; border-radius: 20px; text-align: center; box-shadow: 0 16px 36px rgba(0,0,0,0.5); box-sizing: border-box; }
-        .tg-icon { width: 64px; height: 64px; background: #24a1de; border-radius: 50%; display: flex; align-items: center; justify-content: center; margin: 0 auto 20px; box-shadow: 0 8px 24px rgba(36,161,222,0.4); }
-        .tg-icon svg { width: 36px; height: 36px; fill: #fff; }
-        h1 { font-size: 20px; font-weight: 600; margin: 0 0 8px; }
-        p.sub { font-size: 13px; color: #7f91a4; margin: 0 0 24px; line-height: 1.4; }
-        .input-group { text-align: left; margin-bottom: 20px; }
-        label { display: block; font-size: 11px; text-transform: uppercase; font-weight: 600; color: #7f91a4; margin-bottom: 6px; }
-        input { width: 100%; background: #0e1621; border: 1px solid #242f3d; color: #fff; padding: 12px 14px; border-radius: 10px; font-size: 14px; box-sizing: border-box; }
-        input:focus { outline: none; border-color: #24a1de; }
-        .btn-tg { width: 100%; background: #24a1de; color: #fff; border: none; padding: 13px; border-radius: 12px; font-size: 14px; font-weight: 600; cursor: pointer; transition: background 0.2s; box-shadow: 0 4px 16px rgba(36,161,222,0.3); }
-        .btn-tg:hover { background: #1e8fc8; }
-        .cancel { display: block; margin-top: 14px; font-size: 13px; color: #7f91a4; text-decoration: none; }
-        .cancel:hover { color: #fff; }
+        body { margin: 0; background: #0f141c; color: #fff; font-family: -apple-system,sans-serif; display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 20px; }
+        .card { width: 100%; max-width: 400px; padding: 36px; background: #17212b; border: 1px solid #242f3d; border-radius: 20px; text-align: center; }
+        input { width: 100%; background: #0e1621; border: 1px solid #242f3d; color: #fff; padding: 12px; border-radius: 10px; margin-bottom: 14px; box-sizing: border-box; }
+        .btn { width: 100%; background: #24a1de; color: #fff; border: none; padding: 13px; border-radius: 12px; font-weight: 600; cursor: pointer; }
       </style>
     </head>
     <body>
       <div class="card">
-        <div class="tg-icon">
-          <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm4.64 6.8c-.15 1.58-.8 5.42-1.13 7.19-.14.75-.42 1-.68 1.03-.58.05-1.02-.38-1.58-.75-.88-.58-1.38-.94-2.23-1.5-.99-.65-.35-1.01.22-1.59.15-.15 2.71-2.48 2.76-2.69a.2.2 0 00-.05-.18c-.06-.05-.14-.03-.21-.02-.09.02-1.49.95-4.22 2.79-.4.27-.76.41-1.08.4-.36-.01-1.04-.2-1.55-.37-.63-.2-1.12-.31-1.08-.66.02-.18.27-.36.75-.55 2.92-1.27 4.86-2.11 5.83-2.51 2.78-1.16 3.35-1.36 3.73-1.36.08 0 .27.02.39.12.1.08.13.19.14.27-.01.06.01.24 0 .38z"/></svg>
-        </div>
         <h1>Вход через Telegram</h1>
-        <p class="sub">PulseChat получит доступ к вашему имени пользователя и фотографии профиля</p>
-
         <form action="/api/auth/telegram/callback" method="GET">
-          <div class="input-group">
-            <label>Ваш юзернейм в Telegram</label>
-            <input type="text" name="username" value="romaleks098" required>
-          </div>
-          <div class="input-group">
-            <label>Имя в профиле</label>
-            <input type="text" name="first_name" value="Роман" required>
-          </div>
-          <input type="hidden" name="id" value="tg_romaleks098">
+          <input type="text" name="username" value="romaleks098" placeholder="Юзернейм в Telegram" required>
+          <input type="text" name="first_name" value="Роман" placeholder="Имя в профиле" required>
           <input type="hidden" name="direct_auth" value="true">
-
-          <button type="submit" class="btn-tg">Разрешить и войти</button>
-          <a href="/" class="cancel">Отмена</a>
+          <input type="hidden" name="state" value="${encodedState}">
+          <button type="submit" class="btn">Войти через Telegram</button>
         </form>
       </div>
     </body>
@@ -562,18 +842,39 @@ authRouter.get('/telegram', (_req, res) => {
 authRouter.get('/telegram/callback', async (req, res) => {
   const data = req.query as any;
   const directAuth = data.direct_auth;
+  const encodedState = data.state as string;
+
+  let stateData: any = {};
+  if (encodedState) {
+    try {
+      stateData = JSON.parse(Buffer.from(encodedState, 'base64url').toString('utf-8'));
+    } catch {}
+  }
+
+  const codeChallenge = stateData.code_challenge || (req.query.code_challenge as string);
+  const codeChallengeMethod = stateData.code_challenge_method || (req.query.code_challenge_method as string);
+  const redirectUri = stateData.redirect_uri || (req.query.redirect_uri as string);
+  const stateVal = stateData.state || (req.query.state as string);
 
   if (directAuth) {
     const cleanUser = (data.username || 'tg_user').replace(/[^a-zA-Z0-9_]/g, '');
     const displayName = data.first_name || cleanUser;
-    const token = await upsertOAuthUser(
+    const userId = await upsertOAuthUser(
       'telegram',
       `tg_${cleanUser}`,
       cleanUser,
       displayName,
       `https://api.dicebear.com/7.x/bottts/svg?seed=tg_${cleanUser}`
     );
-    return res.redirect(`/?token=${token}`);
+    return completeOAuthRedirect(
+      req,
+      res,
+      userId,
+      stateVal,
+      codeChallenge,
+      codeChallengeMethod,
+      redirectUri
+    );
   }
 
   const botToken = process.env.TELEGRAM_BOT_TOKEN;
@@ -582,12 +883,11 @@ authRouter.get('/telegram/callback', async (req, res) => {
     return res.redirect('/?oauth_error=telegram_failed');
   }
 
-  // If bot token is configured, verify HMAC signature
   if (botToken && data.hash) {
     try {
       const dataCheckArr: string[] = [];
       for (const key of Object.keys(data).sort()) {
-        if (key !== 'hash') {
+        if (key !== 'hash' && key !== 'state') {
           dataCheckArr.push(`${key}=${data[key]}`);
         }
       }
@@ -606,7 +906,7 @@ authRouter.get('/telegram/callback', async (req, res) => {
   const displayName = [data.first_name, data.last_name].filter(Boolean).join(' ') || data.username || 'Telegram User';
   const avatarUrl = data.photo_url || `https://api.dicebear.com/7.x/bottts/svg?seed=tg_${data.id}`;
 
-  const token = await upsertOAuthUser(
+  const userId = await upsertOAuthUser(
     'telegram',
     String(data.id),
     data.username || `tg_${data.id}`,
@@ -614,12 +914,26 @@ authRouter.get('/telegram/callback', async (req, res) => {
     avatarUrl
   );
 
-  res.redirect(`/?token=${token}`);
+  return completeOAuthRedirect(
+    req,
+    res,
+    userId,
+    stateData.state,
+    stateData.code_challenge,
+    stateData.code_challenge_method,
+    stateData.redirect_uri
+  );
 });
 
+// ============================================================================
+// 9. CURRENT USER PROFILE (/me, /profile)
+// ============================================================================
 authRouter.get('/me', requireAuth, async (req: AuthenticatedRequest, res) => {
   try {
-    const user = await db.get<any>('SELECT id, username, display_name, avatar_url, status_text, bio, theme_settings, last_seen, created_at FROM users WHERE id = ?', req.user!.userId);
+    const user = await db.get<any>(
+      'SELECT id, username, display_name, avatar_url, status_text, bio, theme_settings, last_seen, created_at FROM users WHERE id = ?',
+      req.user!.userId
+    );
     if (!user) {
       return res.status(404).json({ error: 'User not found' });
     }
@@ -629,7 +943,7 @@ authRouter.get('/me', requireAuth, async (req: AuthenticatedRequest, res) => {
       username: user.username,
       displayName: user.display_name,
       avatarUrl: user.avatar_url,
-      statusText: user.status_text,
+      statusText: user.status_text || '',
       bio: user.bio || '',
       themeSettings: user.theme_settings || '',
       lastSeen: user.last_seen,
@@ -684,13 +998,16 @@ authRouter.put('/profile', requireAuth, async (req: AuthenticatedRequest, res) =
       await db.run(`UPDATE users SET ${updates.join(', ')} WHERE id = ?`, ...params);
     }
 
-    const updatedUser = await db.get<any>('SELECT id, username, display_name, avatar_url, status_text, bio, theme_settings FROM users WHERE id = ?', req.user!.userId);
+    const updatedUser = await db.get<any>(
+      'SELECT id, username, display_name, avatar_url, status_text, bio, theme_settings FROM users WHERE id = ?',
+      req.user!.userId
+    );
     res.json({
       id: updatedUser.id,
       username: updatedUser.username,
       displayName: updatedUser.display_name,
       avatarUrl: updatedUser.avatar_url,
-      statusText: updatedUser.status_text,
+      statusText: updatedUser.status_text || '',
       bio: updatedUser.bio || '',
       themeSettings: updatedUser.theme_settings || '',
     });

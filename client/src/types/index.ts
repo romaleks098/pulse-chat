@@ -82,3 +82,12 @@ export interface NetworkInfo {
   clientPort: number;
   serverPort: number;
 }
+
+export interface SessionInfo {
+  id: string;
+  deviceInfo: string;
+  ipAddress: string;
+  createdAt: string;
+  lastUsedAt: string;
+  isCurrent: boolean;
+}
