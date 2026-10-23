@@ -212,10 +212,10 @@ authRouter.post('/social', authRateLimiter(30), async (req, res) => {
   }
 
   const providerId = String(data.id);
-  const botToken = process.env.TELEGRAM_BOT_TOKEN;
+  const { telegramBotToken } = getOAuthEnv();
 
   // Check Telegram signature if bot token is provided
-  if (provider === 'telegram' && botToken && data.hash) {
+  if (provider === 'telegram' && telegramBotToken && data.hash) {
     try {
       const dataCheckArr: string[] = [];
       for (const key of Object.keys(data).sort()) {
@@ -224,7 +224,7 @@ authRouter.post('/social', authRateLimiter(30), async (req, res) => {
         }
       }
       const dataCheckString = dataCheckArr.join('\n');
-      const secretKey = crypto.createHash('sha256').update(botToken).digest();
+      const secretKey = crypto.createHash('sha256').update(telegramBotToken).digest();
       const calculatedHash = crypto.createHmac('sha256', secretKey).update(dataCheckString).digest('hex');
 
       if (calculatedHash !== data.hash) {
@@ -444,12 +444,51 @@ authRouter.post('/exchange', authRateLimiter(30), async (req, res) => {
   }
 });
 
+// ============================================================================
+// OAUTH ENVIRONMENT & CALLBACK HELPERS (with whitespace/newline trimming)
+// ============================================================================
+
+/**
+ * Safely reads OAuth-related environment variables, trimming whitespace, tabs, and newlines.
+ */
+function getOAuthEnv() {
+  const getClean = (key: string): string => {
+    const val = process.env[key];
+    return typeof val === 'string' ? val.trim() : '';
+  };
+
+  return {
+    publicUrl: (getClean('PUBLIC_URL') || getClean('RENDER_EXTERNAL_URL') || '').replace(/\/+$/, ''),
+    googleClientId: getClean('GOOGLE_CLIENT_ID'),
+    googleClientSecret: getClean('GOOGLE_CLIENT_SECRET'),
+    githubClientId: getClean('GITHUB_CLIENT_ID'),
+    githubClientSecret: getClean('GITHUB_CLIENT_SECRET'),
+    telegramBotToken: getClean('TELEGRAM_BOT_TOKEN'),
+    telegramBotName: getClean('TELEGRAM_BOT_NAME'),
+  };
+}
+
+/**
+ * Generates an absolute redirect callback URI using PUBLIC_URL (or host fallback),
+ * guaranteeing byte-for-byte matching between authorization request and token exchange.
+ */
+function getCallbackUrl(req: Request, provider: 'google' | 'github'): string {
+  const { publicUrl } = getOAuthEnv();
+  if (publicUrl) {
+    return `${publicUrl}/api/auth/${provider}/callback`;
+  }
+  const host = req.get('host') || 'localhost:3001';
+  const protocol = req.protocol === 'https' || req.headers['x-forwarded-proto'] === 'https' ? 'https' : 'http';
+  return `${protocol}://${host}/api/auth/${provider}/callback`;
+}
+
 // Public providers configuration
 authRouter.get('/providers', (_req, res) => {
+  const env = getOAuthEnv();
   res.json({
-    telegramBotName: process.env.TELEGRAM_BOT_NAME || '',
-    googleClientId: process.env.GOOGLE_CLIENT_ID || '',
-    githubClientId: process.env.GITHUB_CLIENT_ID || '',
+    telegramBotName: env.telegramBotName,
+    googleClientId: env.googleClientId,
+    githubClientId: env.githubClientId,
   });
 });
 
@@ -521,7 +560,7 @@ async function completeOAuthRedirect(
 
 // --- GITHUB ---
 authRouter.get('/github', (req, res) => {
-  const clientId = process.env.GITHUB_CLIENT_ID;
+  const { githubClientId } = getOAuthEnv();
   const { redirect_uri, code_challenge, code_challenge_method, state } = req.query as any;
 
   // Preserve state & PKCE across OAuth flow
@@ -533,12 +572,10 @@ authRouter.get('/github', (req, res) => {
   });
   const encodedState = Buffer.from(oauthState).toString('base64url');
 
-  if (clientId) {
-    const host = req.get('host');
-    const protocol = req.protocol === 'https' || req.headers['x-forwarded-proto'] === 'https' ? 'https' : 'http';
-    const callbackUri = encodeURIComponent(`${protocol}://${host}/api/auth/github/callback`);
+  if (githubClientId) {
+    const callbackUri = encodeURIComponent(getCallbackUrl(req, 'github'));
     return res.redirect(
-      `https://github.com/login/oauth/authorize?client_id=${clientId}&redirect_uri=${callbackUri}&scope=read:user%20user:email&state=${encodedState}`
+      `https://github.com/login/oauth/authorize?client_id=${githubClientId}&redirect_uri=${callbackUri}&scope=read:user%20user:email&state=${encodedState}`
     );
   }
 
@@ -577,12 +614,24 @@ authRouter.get('/github/callback', async (req, res) => {
   const directAuth = req.query.direct_auth as string;
   const customName = (req.query.custom_name as string) || 'romaleks098';
   const encodedState = req.query.state as string;
+  const providerError = req.query.error as string;
+
+  if (providerError) {
+    console.warn(`[GitHub OAuth] Provider error received: ${providerError}`, req.query.error_description || '');
+    if (providerError === 'access_denied') {
+      return res.redirect('/?oauth_error=oauth_access_denied');
+    }
+    return res.redirect('/?oauth_error=oauth_exchange_failed');
+  }
 
   let stateData: any = {};
   if (encodedState) {
     try {
       stateData = JSON.parse(Buffer.from(encodedState, 'base64url').toString('utf-8'));
-    } catch {}
+    } catch {
+      // Fallback if state is a plain string rather than JSON
+      stateData = { state: encodedState };
+    }
   }
 
   const codeChallenge = stateData.code_challenge || (req.query.code_challenge as string);
@@ -611,26 +660,59 @@ authRouter.get('/github/callback', async (req, res) => {
     );
   }
 
-  const clientId = process.env.GITHUB_CLIENT_ID;
-  const clientSecret = process.env.GITHUB_CLIENT_SECRET;
+  const { githubClientId, githubClientSecret, publicUrl } = getOAuthEnv();
+  const callbackUri = getCallbackUrl(req, 'github');
 
-  if (!code || !clientId || !clientSecret) {
-    return res.redirect('/?oauth_error=github_failed');
+  console.log(`[GitHub OAuth] Initiating token exchange:`, {
+    has_client_id: Boolean(githubClientId),
+    has_client_secret: Boolean(githubClientSecret),
+    has_public_url: Boolean(publicUrl),
+    redirect_uri: callbackUri,
+  });
+
+  if (!code || !githubClientId || !githubClientSecret) {
+    console.error('[GitHub OAuth] Missing code or credentials:', {
+      has_code: Boolean(code),
+      has_client_id: Boolean(githubClientId),
+      has_client_secret: Boolean(githubClientSecret),
+    });
+    return res.redirect('/?oauth_error=oauth_exchange_failed');
   }
 
   try {
     const tokenRes = await fetch('https://github.com/login/oauth/access_token', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-      body: JSON.stringify({ client_id: clientId, client_secret: clientSecret, code }),
+      body: JSON.stringify({
+        client_id: githubClientId,
+        client_secret: githubClientSecret,
+        code,
+        redirect_uri: callbackUri,
+      }),
     });
-    const tokenData = (await tokenRes.json()) as any;
-    if (!tokenData.access_token) throw new Error('No access token');
+    const tokenData = (await tokenRes.json().catch(() => ({}))) as any;
+
+    if (!tokenRes.ok || !tokenData.access_token) {
+      console.error(`[GitHub OAuth] Token exchange failed:`, {
+        status: tokenRes.status,
+        error: tokenData.error || 'unknown_error',
+        error_description: tokenData.error_description || 'No description provided by GitHub',
+        redirect_uri_used: callbackUri,
+      });
+      return res.redirect('/?oauth_error=oauth_exchange_failed');
+    }
 
     const userRes = await fetch('https://api.github.com/user', {
       headers: { Authorization: `Bearer ${tokenData.access_token}`, 'User-Agent': 'PulseChat-App' },
     });
-    const ghUser = (await userRes.json()) as any;
+    const ghUser = (await userRes.json().catch(() => ({}))) as any;
+
+    if (!userRes.ok || !ghUser.id) {
+      console.error(`[GitHub OAuth] User profile fetch failed:`, {
+        status: userRes.status,
+      });
+      return res.redirect('/?oauth_error=oauth_exchange_failed');
+    }
 
     const userId = await upsertOAuthUser(
       'github',
@@ -649,15 +731,15 @@ authRouter.get('/github/callback', async (req, res) => {
       codeChallengeMethod,
       redirectUri
     );
-  } catch (err) {
-    console.error('GitHub OAuth error:', err);
-    res.redirect('/?oauth_error=github_failed');
+  } catch (err: any) {
+    console.error('[GitHub OAuth] Internal error:', err.message || err);
+    res.redirect('/?oauth_error=oauth_exchange_failed');
   }
 });
 
 // --- GOOGLE ---
 authRouter.get('/google', (req, res) => {
-  const clientId = process.env.GOOGLE_CLIENT_ID;
+  const { googleClientId } = getOAuthEnv();
   const { redirect_uri, code_challenge, code_challenge_method, state } = req.query as any;
 
   const oauthState = JSON.stringify({
@@ -668,13 +750,10 @@ authRouter.get('/google', (req, res) => {
   });
   const encodedState = Buffer.from(oauthState).toString('base64url');
 
-  if (clientId) {
-    const host = req.get('host');
-    const protocol = req.protocol === 'https' || req.headers['x-forwarded-proto'] === 'https' ? 'https' : 'http';
-    const callbackUri = encodeURIComponent(`${protocol}://${host}/api/auth/google/callback`);
-
+  if (googleClientId) {
+    const callbackUri = encodeURIComponent(getCallbackUrl(req, 'google'));
     return res.redirect(
-      `https://accounts.google.com/o/oauth2/v2/auth?client_id=${clientId}&redirect_uri=${callbackUri}&response_type=code&scope=openid%20profile%20email&access_type=offline&state=${encodedState}`
+      `https://accounts.google.com/o/oauth2/v2/auth?client_id=${googleClientId}&redirect_uri=${callbackUri}&response_type=code&scope=openid%20profile%20email&access_type=offline&state=${encodedState}`
     );
   }
 
@@ -713,12 +792,24 @@ authRouter.get('/google/callback', async (req, res) => {
   const email = (req.query.email as string) || 'google_user@gmail.com';
   const name = (req.query.name as string) || email.split('@')[0];
   const encodedState = req.query.state as string;
+  const providerError = req.query.error as string;
+
+  if (providerError) {
+    console.warn(`[Google OAuth] Provider error received: ${providerError}`, req.query.error_description || '');
+    if (providerError === 'access_denied') {
+      return res.redirect('/?oauth_error=oauth_access_denied');
+    }
+    return res.redirect('/?oauth_error=oauth_exchange_failed');
+  }
 
   let stateData: any = {};
   if (encodedState) {
     try {
       stateData = JSON.parse(Buffer.from(encodedState, 'base64url').toString('utf-8'));
-    } catch {}
+    } catch {
+      // Fallback if state is a plain string rather than JSON
+      stateData = { state: encodedState };
+    }
   }
 
   const codeChallenge = stateData.code_challenge || (req.query.code_challenge as string);
@@ -746,36 +837,61 @@ authRouter.get('/google/callback', async (req, res) => {
     );
   }
 
-  const clientId = process.env.GOOGLE_CLIENT_ID;
-  const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
+  const { googleClientId, googleClientSecret, publicUrl } = getOAuthEnv();
+  const callbackUri = getCallbackUrl(req, 'google');
 
-  if (!code || !clientId || !clientSecret) {
-    return res.redirect('/?oauth_error=google_failed');
+  console.log(`[Google OAuth] Initiating token exchange:`, {
+    has_client_id: Boolean(googleClientId),
+    has_client_secret: Boolean(googleClientSecret),
+    has_public_url: Boolean(publicUrl),
+    redirect_uri: callbackUri,
+  });
+
+  if (!code || !googleClientId || !googleClientSecret) {
+    console.error('[Google OAuth] Missing code or credentials:', {
+      has_code: Boolean(code),
+      has_client_id: Boolean(googleClientId),
+      has_client_secret: Boolean(googleClientSecret),
+    });
+    return res.redirect('/?oauth_error=oauth_exchange_failed');
   }
 
   try {
-    const host = req.get('host');
-    const protocol = req.protocol === 'https' || req.headers['x-forwarded-proto'] === 'https' ? 'https' : 'http';
-    const redirectUri = `${protocol}://${host}/api/auth/google/callback`;
-
     const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({
         code,
-        client_id: clientId,
-        client_secret: clientSecret,
-        redirect_uri: redirectUri,
+        client_id: googleClientId,
+        client_secret: googleClientSecret,
+        redirect_uri: callbackUri,
         grant_type: 'authorization_code',
       }),
     });
-    const tokenData = (await tokenRes.json()) as any;
-    if (!tokenData.access_token) throw new Error('No Google token');
+
+    const tokenData = (await tokenRes.json().catch(() => ({}))) as any;
+
+    if (!tokenRes.ok || !tokenData.access_token) {
+      console.error(`[Google OAuth] Token exchange failed:`, {
+        status: tokenRes.status,
+        error: tokenData.error || 'unknown_error',
+        error_description: tokenData.error_description || 'No description provided by Google',
+        redirect_uri_used: callbackUri,
+      });
+      return res.redirect('/?oauth_error=oauth_exchange_failed');
+    }
 
     const profileRes = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
       headers: { Authorization: `Bearer ${tokenData.access_token}` },
     });
-    const gUser = (await profileRes.json()) as any;
+    const gUser = (await profileRes.json().catch(() => ({}))) as any;
+
+    if (!profileRes.ok || !gUser.id) {
+      console.error(`[Google OAuth] User profile fetch failed:`, {
+        status: profileRes.status,
+      });
+      return res.redirect('/?oauth_error=oauth_exchange_failed');
+    }
 
     const userId = await upsertOAuthUser(
       'google',
@@ -794,9 +910,9 @@ authRouter.get('/google/callback', async (req, res) => {
       codeChallengeMethod,
       redirectUri
     );
-  } catch (err) {
-    console.error('Google OAuth error:', err);
-    res.redirect('/?oauth_error=google_failed');
+  } catch (err: any) {
+    console.error('[Google OAuth] Internal error:', err.message || err);
+    res.redirect('/?oauth_error=oauth_exchange_failed');
   }
 });
 
@@ -844,12 +960,24 @@ authRouter.get('/telegram/callback', async (req, res) => {
   const data = req.query as any;
   const directAuth = data.direct_auth;
   const encodedState = data.state as string;
+  const providerError = data.error as string;
+
+  if (providerError) {
+    console.warn(`[Telegram OAuth] Provider error received: ${providerError}`);
+    if (providerError === 'access_denied') {
+      return res.redirect('/?oauth_error=oauth_access_denied');
+    }
+    return res.redirect('/?oauth_error=oauth_exchange_failed');
+  }
 
   let stateData: any = {};
   if (encodedState) {
     try {
       stateData = JSON.parse(Buffer.from(encodedState, 'base64url').toString('utf-8'));
-    } catch {}
+    } catch {
+      // Fallback if state is a plain string rather than JSON
+      stateData = { state: encodedState };
+    }
   }
 
   const codeChallenge = stateData.code_challenge || (req.query.code_challenge as string);
@@ -878,13 +1006,14 @@ authRouter.get('/telegram/callback', async (req, res) => {
     );
   }
 
-  const botToken = process.env.TELEGRAM_BOT_TOKEN;
+  const { telegramBotToken } = getOAuthEnv();
 
   if (!data.id) {
-    return res.redirect('/?oauth_error=telegram_failed');
+    console.error('[Telegram OAuth] Missing user ID');
+    return res.redirect('/?oauth_error=oauth_exchange_failed');
   }
 
-  if (botToken && data.hash) {
+  if (telegramBotToken && data.hash) {
     try {
       const dataCheckArr: string[] = [];
       for (const key of Object.keys(data).sort()) {
@@ -893,14 +1022,16 @@ authRouter.get('/telegram/callback', async (req, res) => {
         }
       }
       const dataCheckString = dataCheckArr.join('\n');
-      const secretKey = crypto.createHash('sha256').update(botToken).digest();
+      const secretKey = crypto.createHash('sha256').update(telegramBotToken).digest();
       const calculatedHash = crypto.createHmac('sha256', secretKey).update(dataCheckString).digest('hex');
 
       if (calculatedHash !== data.hash) {
-        return res.redirect('/?oauth_error=telegram_invalid_signature');
+        console.error('[Telegram OAuth] Signature hash mismatch');
+        return res.redirect('/?oauth_error=oauth_exchange_failed');
       }
-    } catch (err) {
-      return res.redirect('/?oauth_error=telegram_failed');
+    } catch (err: any) {
+      console.error('[Telegram OAuth] Signature error:', err.message || err);
+      return res.redirect('/?oauth_error=oauth_exchange_failed');
     }
   }
 
@@ -957,30 +1088,35 @@ setInterval(() => {
 }, 60 * 1000);
 
 async function sendTelegramMessage(chatId: number | string, text: string) {
-  const botToken = process.env.TELEGRAM_BOT_TOKEN;
-  if (!botToken) return;
+  const { telegramBotToken } = getOAuthEnv();
+  if (!telegramBotToken) return;
   try {
-    await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+    await fetch(`https://api.telegram.org/bot${telegramBotToken}/sendMessage`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ chat_id: chatId, text }),
     });
-  } catch (e) {
-    console.error('Failed to send Telegram message:', e);
+  } catch (e: any) {
+    console.error('Failed to send Telegram message:', e.message || e);
   }
 }
 
 export async function setupTelegramWebhook() {
-  const botToken = process.env.TELEGRAM_BOT_TOKEN;
-  const publicUrl = process.env.PUBLIC_URL || process.env.RENDER_EXTERNAL_URL;
-  if (botToken && publicUrl && publicUrl.startsWith('https://')) {
+  const { telegramBotToken, publicUrl } = getOAuthEnv();
+  console.log(`[Telegram Setup] Webhook initialization:`, {
+    has_bot_token: Boolean(telegramBotToken),
+    has_public_url: Boolean(publicUrl),
+    public_url: publicUrl || null,
+  });
+
+  if (telegramBotToken && publicUrl && publicUrl.startsWith('https://')) {
     try {
-      const webhookUrl = `${publicUrl.replace(/\/+$/, '')}/api/auth/telegram/webhook`;
-      const resp = await fetch(`https://api.telegram.org/bot${botToken}/setWebhook?url=${encodeURIComponent(webhookUrl)}`);
-      const data: any = await resp.json();
+      const webhookUrl = `${publicUrl}/api/auth/telegram/webhook`;
+      const resp = await fetch(`https://api.telegram.org/bot${telegramBotToken}/setWebhook?url=${encodeURIComponent(webhookUrl)}`);
+      const data: any = await resp.json().catch(() => ({}));
       console.log(`[Telegram] Webhook registered at ${webhookUrl}:`, data?.ok ? 'OK' : data?.description);
     } catch (e: any) {
-      console.error('[Telegram] Failed to register webhook:', e.message);
+      console.error('[Telegram] Failed to register webhook:', e.message || e);
     }
   }
 }
@@ -1002,7 +1138,8 @@ authRouter.post('/telegram/bot/session', authRateLimiter(20), async (req, res) =
     state,
   });
 
-  const botName = process.env.TELEGRAM_BOT_NAME || 'PulseChatBot';
+  const { telegramBotName } = getOAuthEnv();
+  const botName = telegramBotName || 'PulseChatBot';
   const deepLink = `https://t.me/${botName}?start=${token}`;
 
   res.json({
@@ -1030,8 +1167,10 @@ authRouter.post('/telegram/webhook', async (req, res) => {
 
     const token = match[1];
     const session = telegramBotSessions.get(token);
+    const { telegramBotToken } = getOAuthEnv();
+
     if (!session || session.expiresAt < Date.now()) {
-      if (process.env.TELEGRAM_BOT_TOKEN) {
+      if (telegramBotToken) {
         await sendTelegramMessage(
           message.chat.id,
           '❌ Ссылка для авторизации устарела или недействительна. Пожалуйста, начните вход заново в приложении PulseChat.'
@@ -1083,7 +1222,7 @@ authRouter.post('/telegram/webhook', async (req, res) => {
       user: userProfile,
     });
 
-    if (process.env.TELEGRAM_BOT_TOKEN) {
+    if (telegramBotToken) {
       await sendTelegramMessage(
         message.chat.id,
         '✅ Авторизация в PulseChat успешна! Вы можете вернуться в приложение.'

@@ -142,7 +142,8 @@ async function startServer() {
     console.log(`🚀 PulseChat Server listening on http://0.0.0.0:${PORT}`);
 
     // Keep-alive self-ping mechanism to keep Render free tier awake 24/7
-    const PUBLIC_URL = process.env.RENDER_EXTERNAL_URL || 'https://pulse-chat-qel7.onrender.com';
+    const rawPublicUrl = process.env.PUBLIC_URL?.trim() || process.env.RENDER_EXTERNAL_URL?.trim() || 'https://pulse-chat-qel7.onrender.com';
+    const PUBLIC_URL = rawPublicUrl.replace(/\/+$/, '');
     console.log(`[Keep-Alive] Service active for: ${PUBLIC_URL}`);
 
     // Register Telegram webhook if bot token is provided

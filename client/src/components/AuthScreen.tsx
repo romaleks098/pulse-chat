@@ -30,7 +30,15 @@ export const AuthScreen: React.FC = () => {
     const urlParams = new URLSearchParams(window.location.search);
     const oauthError = urlParams.get('oauth_error');
     if (oauthError) {
-      setError('Ошибка входа через социальную сеть. Попробуйте еще раз.');
+      if (oauthError === 'oauth_access_denied') {
+        setError('Вход отменён пользователем или доступ запрещён (access_denied).');
+      } else if (oauthError === 'oauth_state_mismatch') {
+        setError('Ошибка проверки сессии безопасности (state mismatch). Пожалуйста, повторите попытку.');
+      } else if (oauthError === 'oauth_exchange_failed') {
+        setError('Ошибка обмена токена авторизации. Проверьте настройки OAuth в Render / Google Console.');
+      } else {
+        setError('Ошибка входа через социальную сеть. Попробуйте еще раз.');
+      }
     }
   }, []);
 
