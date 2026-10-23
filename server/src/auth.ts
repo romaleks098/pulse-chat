@@ -236,6 +236,58 @@ export function verifyPKCE(verifier: string, challenge: string, method: string =
 }
 
 /**
+ * Persists an OAuth state entry into the database with 10-minute TTL.
+ * Survives process restarts and cold boots between initial redirect and provider callback.
+ */
+export async function createOAuthState(
+  provider: 'google' | 'github' | 'telegram',
+  clientState?: string,
+  redirectUri?: string,
+  codeChallenge?: string,
+  codeChallengeMethod: string = 'S256'
+): Promise<string> {
+  const stateId = crypto.randomBytes(32).toString('hex');
+  const now = new Date().toISOString();
+  const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+
+  await db.run(`
+    INSERT INTO oauth_states (id, provider, client_state, redirect_uri, code_challenge, code_challenge_method, expires_at, used, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)
+  `, stateId, provider, clientState || '', redirectUri || '', codeChallenge || '', codeChallengeMethod, expiresAt, now);
+
+  return stateId;
+}
+
+/**
+ * Consumes an OAuth state entry from the database, enforcing single-use and expiration.
+ */
+export async function consumeOAuthState(
+  stateId: string,
+  provider: 'google' | 'github' | 'telegram'
+): Promise<{ clientState: string; redirectUri: string; codeChallenge: string; codeChallengeMethod: string } | null> {
+  const now = new Date().toISOString();
+  const row = await db.get<any>(`
+    SELECT id, client_state, redirect_uri, code_challenge, code_challenge_method
+    FROM oauth_states
+    WHERE id = ? AND provider = ? AND used = 0 AND expires_at > ?
+  `, stateId, provider, now);
+
+  if (!row) {
+    return null;
+  }
+
+  // Mark as used immediately to prevent replay
+  await db.run('UPDATE oauth_states SET used = 1 WHERE id = ?', stateId);
+
+  return {
+    clientState: row.client_state || '',
+    redirectUri: row.redirect_uri || '',
+    codeChallenge: row.code_challenge || '',
+    codeChallengeMethod: row.code_challenge_method || 'S256',
+  };
+}
+
+/**
  * Generates an authorization code with PKCE challenge (TTL 60 seconds)
  */
 export async function createAuthCode(

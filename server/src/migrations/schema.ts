@@ -142,4 +142,30 @@ export const migrations: Migration[] = [
       ];
     },
   },
+  {
+    version: 2,
+    name: '002_oauth_states_persistence',
+    up: (isPostgres: boolean) => {
+      const timestampType = isPostgres ? 'TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP' : 'DATETIME DEFAULT CURRENT_TIMESTAMP';
+
+      return [
+        // 1. Pending OAuth States table (survives container restarts between redirect & callback)
+        `CREATE TABLE IF NOT EXISTS oauth_states (
+          id TEXT PRIMARY KEY,
+          provider TEXT NOT NULL,
+          client_state TEXT DEFAULT '',
+          redirect_uri TEXT NOT NULL,
+          code_challenge TEXT DEFAULT '',
+          code_challenge_method TEXT DEFAULT 'S256',
+          expires_at ${timestampType} NOT NULL,
+          used INTEGER DEFAULT 0,
+          created_at ${timestampType}
+        );`,
+
+        // 2. Indexes for fast lookup and cleanup
+        `CREATE INDEX IF NOT EXISTS idx_oauth_states_id ON oauth_states(id);`,
+        `CREATE INDEX IF NOT EXISTS idx_oauth_states_expires ON oauth_states(expires_at);`,
+      ];
+    },
+  },
 ];

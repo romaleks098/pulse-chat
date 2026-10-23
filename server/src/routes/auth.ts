@@ -13,6 +13,8 @@ import {
   getUserSessions,
   createAuthCode,
   exchangeAuthCode,
+  createOAuthState,
+  consumeOAuthState,
   parseDeviceInfo,
   requireAuth,
   AuthenticatedRequest,
@@ -558,24 +560,29 @@ async function completeOAuthRedirect(
 // 8. OAUTH REDIRECTS (GitHub, Google, Telegram) - ZERO TOKENS IN URL!
 // ============================================================================
 
+// Track in-flight provider code exchanges to prevent duplicate POST /token requests (which cause invalid_grant)
+const activeCodeExchanges = new Map<string, Promise<any>>();
+
 // --- GITHUB ---
-authRouter.get('/github', (req, res) => {
+authRouter.get('/github', async (req, res) => {
   const { githubClientId } = getOAuthEnv();
   const { redirect_uri, code_challenge, code_challenge_method, state } = req.query as any;
 
-  // Preserve state & PKCE across OAuth flow
-  const oauthState = JSON.stringify({
-    state: state || '',
-    redirect_uri: redirect_uri || '',
-    code_challenge: code_challenge || '',
-    code_challenge_method: code_challenge_method || 'S256',
+  // Persist state in PostgreSQL (survives process restarts and cold boots)
+  const stateId = await createOAuthState('github', state, redirect_uri, code_challenge, code_challenge_method);
+
+  // Set signed/secure httpOnly cookie as well for dual-channel verification
+  res.cookie('pulse_oauth_state', stateId, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax',
+    maxAge: 10 * 60 * 1000,
   });
-  const encodedState = Buffer.from(oauthState).toString('base64url');
 
   if (githubClientId) {
     const callbackUri = encodeURIComponent(getCallbackUrl(req, 'github'));
     return res.redirect(
-      `https://github.com/login/oauth/authorize?client_id=${githubClientId}&redirect_uri=${callbackUri}&scope=read:user%20user:email&state=${encodedState}`
+      `https://github.com/login/oauth/authorize?client_id=${githubClientId}&redirect_uri=${callbackUri}&scope=read:user%20user:email&state=${stateId}`
     );
   }
 
@@ -600,7 +607,7 @@ authRouter.get('/github', (req, res) => {
         <form action="/api/auth/github/callback" method="GET">
           <input type="text" name="custom_name" value="romaleks098" placeholder="Ваш GitHub логин">
           <input type="hidden" name="direct_auth" value="true">
-          <input type="hidden" name="state" value="${encodedState}">
+          <input type="hidden" name="state" value="${stateId}">
           <button type="submit" class="btn">Войти через GitHub</button>
         </form>
       </div>
@@ -613,7 +620,9 @@ authRouter.get('/github/callback', async (req, res) => {
   const code = req.query.code as string;
   const directAuth = req.query.direct_auth as string;
   const customName = (req.query.custom_name as string) || 'romaleks098';
-  const encodedState = req.query.state as string;
+  const stateParam = req.query.state as string;
+  const cookieState = req.cookies?.pulse_oauth_state as string;
+  const stateId = stateParam || cookieState;
   const providerError = req.query.error as string;
 
   if (providerError) {
@@ -624,20 +633,27 @@ authRouter.get('/github/callback', async (req, res) => {
     return res.redirect('/?oauth_error=oauth_exchange_failed');
   }
 
-  let stateData: any = {};
-  if (encodedState) {
-    try {
-      stateData = JSON.parse(Buffer.from(encodedState, 'base64url').toString('utf-8'));
-    } catch {
-      // Fallback if state is a plain string rather than JSON
-      stateData = { state: encodedState };
-    }
+  // Retrieve & consume state from DB
+  const isDbStateId = typeof stateId === 'string' && /^[a-f0-9]{64}$/i.test(stateId);
+  const savedState = isDbStateId ? await consumeOAuthState(stateId, 'github') : null;
+
+  if (isDbStateId && !savedState) {
+    console.warn('[GitHub OAuth] OAuth state not found in database or already consumed:', {
+      state_id: stateId.slice(0, 8) + '...',
+    });
+    return res.redirect('/?oauth_error=oauth_state_mismatch');
+  }
+  if (!isDbStateId && !directAuth) {
+    console.warn('[GitHub OAuth] Invalid state parameter received in non-dev mode');
+    return res.redirect('/?oauth_error=oauth_state_mismatch');
   }
 
-  const codeChallenge = stateData.code_challenge || (req.query.code_challenge as string);
-  const codeChallengeMethod = stateData.code_challenge_method || (req.query.code_challenge_method as string);
-  const redirectUri = stateData.redirect_uri || (req.query.redirect_uri as string);
-  const stateVal = stateData.state || (req.query.state as string);
+  res.clearCookie('pulse_oauth_state');
+
+  const codeChallenge = savedState?.codeChallenge || (req.query.code_challenge as string);
+  const codeChallengeMethod = savedState?.codeChallengeMethod || (req.query.code_challenge_method as string) || 'S256';
+  const redirectUri = savedState?.redirectUri || (req.query.redirect_uri as string);
+  const stateVal = savedState?.clientState || (req.query.state as string);
 
   // Direct Dev Auth flow
   if (directAuth) {
@@ -680,47 +696,62 @@ authRouter.get('/github/callback', async (req, res) => {
   }
 
   try {
-    const tokenRes = await fetch('https://github.com/login/oauth/access_token', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-      body: JSON.stringify({
-        client_id: githubClientId,
-        client_secret: githubClientSecret,
-        code,
-        redirect_uri: callbackUri,
-      }),
-    });
-    const tokenData = (await tokenRes.json().catch(() => ({}))) as any;
-
-    if (!tokenRes.ok || !tokenData.access_token) {
-      console.error(`[GitHub OAuth] Token exchange failed:`, {
-        status: tokenRes.status,
-        error: tokenData.error || 'unknown_error',
-        error_description: tokenData.error_description || 'No description provided by GitHub',
-        redirect_uri_used: callbackUri,
+    const exchangeFn = async () => {
+      const tokenRes = await fetch('https://github.com/login/oauth/access_token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify({
+          client_id: githubClientId,
+          client_secret: githubClientSecret,
+          code,
+          redirect_uri: callbackUri,
+        }),
       });
-      return res.redirect('/?oauth_error=oauth_exchange_failed');
+      const tokenData = (await tokenRes.json().catch(() => ({}))) as any;
+
+      if (!tokenRes.ok || !tokenData.access_token) {
+        console.error(`[GitHub OAuth] Token exchange failed:`, {
+          status: tokenRes.status,
+          error: tokenData.error || 'unknown_error',
+          error_description: tokenData.error_description || 'No description provided by GitHub',
+          redirect_uri_used: callbackUri,
+        });
+        throw new Error('github_exchange_failed');
+      }
+
+      const userRes = await fetch('https://api.github.com/user', {
+        headers: { Authorization: `Bearer ${tokenData.access_token}`, 'User-Agent': 'PulseChat-App' },
+      });
+      const ghUser = (await userRes.json().catch(() => ({}))) as any;
+
+      if (!userRes.ok || !ghUser.id) {
+        console.error(`[GitHub OAuth] User profile fetch failed:`, {
+          status: userRes.status,
+        });
+        throw new Error('github_profile_failed');
+      }
+
+      const userId = await upsertOAuthUser(
+        'github',
+        String(ghUser.id),
+        ghUser.login,
+        ghUser.name || ghUser.login,
+        ghUser.avatar_url || `https://github.com/${ghUser.login}.png`
+      );
+
+      return { userId };
+    };
+
+    let exchangePromise = activeCodeExchanges.get(code);
+    if (!exchangePromise) {
+      exchangePromise = exchangeFn();
+      activeCodeExchanges.set(code, exchangePromise);
+      exchangePromise.finally(() => {
+        setTimeout(() => activeCodeExchanges.delete(code), 30000);
+      });
     }
 
-    const userRes = await fetch('https://api.github.com/user', {
-      headers: { Authorization: `Bearer ${tokenData.access_token}`, 'User-Agent': 'PulseChat-App' },
-    });
-    const ghUser = (await userRes.json().catch(() => ({}))) as any;
-
-    if (!userRes.ok || !ghUser.id) {
-      console.error(`[GitHub OAuth] User profile fetch failed:`, {
-        status: userRes.status,
-      });
-      return res.redirect('/?oauth_error=oauth_exchange_failed');
-    }
-
-    const userId = await upsertOAuthUser(
-      'github',
-      String(ghUser.id),
-      ghUser.login,
-      ghUser.name || ghUser.login,
-      ghUser.avatar_url || `https://github.com/${ghUser.login}.png`
-    );
+    const { userId } = await exchangePromise;
 
     return completeOAuthRedirect(
       req,
@@ -738,22 +769,25 @@ authRouter.get('/github/callback', async (req, res) => {
 });
 
 // --- GOOGLE ---
-authRouter.get('/google', (req, res) => {
+authRouter.get('/google', async (req, res) => {
   const { googleClientId } = getOAuthEnv();
   const { redirect_uri, code_challenge, code_challenge_method, state } = req.query as any;
 
-  const oauthState = JSON.stringify({
-    state: state || '',
-    redirect_uri: redirect_uri || '',
-    code_challenge: code_challenge || '',
-    code_challenge_method: code_challenge_method || 'S256',
+  // Persist state in PostgreSQL (survives process restarts and cold boots)
+  const stateId = await createOAuthState('google', state, redirect_uri, code_challenge, code_challenge_method);
+
+  // Set signed/secure httpOnly cookie as well for dual-channel verification
+  res.cookie('pulse_oauth_state', stateId, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax',
+    maxAge: 10 * 60 * 1000,
   });
-  const encodedState = Buffer.from(oauthState).toString('base64url');
 
   if (googleClientId) {
     const callbackUri = encodeURIComponent(getCallbackUrl(req, 'google'));
     return res.redirect(
-      `https://accounts.google.com/o/oauth2/v2/auth?client_id=${googleClientId}&redirect_uri=${callbackUri}&response_type=code&scope=openid%20profile%20email&access_type=offline&state=${encodedState}`
+      `https://accounts.google.com/o/oauth2/v2/auth?client_id=${googleClientId}&redirect_uri=${callbackUri}&response_type=code&scope=openid%20profile%20email&access_type=offline&state=${stateId}`
     );
   }
 
@@ -776,7 +810,7 @@ authRouter.get('/google', (req, res) => {
         <h1>Вход с аккаунтом Google</h1>
         <form action="/api/auth/google/callback" method="GET">
           <input type="hidden" name="direct_auth" value="true">
-          <input type="hidden" name="state" value="${encodedState}">
+          <input type="hidden" name="state" value="${stateId}">
           <input type="email" name="email" value="romaleks098@gmail.com" placeholder="Ваш Google email..." required>
           <button type="submit" class="btn">Войти с этим аккаунтом</button>
         </form>
@@ -791,7 +825,9 @@ authRouter.get('/google/callback', async (req, res) => {
   const directAuth = req.query.direct_auth as string;
   const email = (req.query.email as string) || 'google_user@gmail.com';
   const name = (req.query.name as string) || email.split('@')[0];
-  const encodedState = req.query.state as string;
+  const stateParam = req.query.state as string;
+  const cookieState = req.cookies?.pulse_oauth_state as string;
+  const stateId = stateParam || cookieState;
   const providerError = req.query.error as string;
 
   if (providerError) {
@@ -802,20 +838,28 @@ authRouter.get('/google/callback', async (req, res) => {
     return res.redirect('/?oauth_error=oauth_exchange_failed');
   }
 
-  let stateData: any = {};
-  if (encodedState) {
-    try {
-      stateData = JSON.parse(Buffer.from(encodedState, 'base64url').toString('utf-8'));
-    } catch {
-      // Fallback if state is a plain string rather than JSON
-      stateData = { state: encodedState };
-    }
+  // Retrieve & consume state from DB
+  const isDbStateId = typeof stateId === 'string' && /^[a-f0-9]{64}$/i.test(stateId);
+  const savedState = isDbStateId ? await consumeOAuthState(stateId, 'google') : null;
+
+  if (isDbStateId && !savedState) {
+    console.warn('[Google OAuth] OAuth state not found in database or already consumed:', {
+      state_id: stateId.slice(0, 8) + '...',
+      has_cookie_state: Boolean(cookieState),
+    });
+    return res.redirect('/?oauth_error=oauth_state_mismatch');
+  }
+  if (!isDbStateId && !directAuth) {
+    console.warn('[Google OAuth] Invalid state parameter received in non-dev mode');
+    return res.redirect('/?oauth_error=oauth_state_mismatch');
   }
 
-  const codeChallenge = stateData.code_challenge || (req.query.code_challenge as string);
-  const codeChallengeMethod = stateData.code_challenge_method || (req.query.code_challenge_method as string);
-  const redirectUri = stateData.redirect_uri || (req.query.redirect_uri as string);
-  const stateVal = stateData.state || (req.query.state as string);
+  res.clearCookie('pulse_oauth_state');
+
+  const codeChallenge = savedState?.codeChallenge || (req.query.code_challenge as string);
+  const codeChallengeMethod = savedState?.codeChallengeMethod || (req.query.code_challenge_method as string) || 'S256';
+  const redirectUri = savedState?.redirectUri || (req.query.redirect_uri as string);
+  const stateVal = savedState?.clientState || (req.query.state as string);
 
   if (directAuth) {
     const cleanUser = email.split('@')[0].replace(/[^a-zA-Z0-9_-]/g, '') || 'google_user';
@@ -857,49 +901,65 @@ authRouter.get('/google/callback', async (req, res) => {
   }
 
   try {
-    const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({
-        code,
-        client_id: googleClientId,
-        client_secret: googleClientSecret,
-        redirect_uri: callbackUri,
-        grant_type: 'authorization_code',
-      }),
-    });
-
-    const tokenData = (await tokenRes.json().catch(() => ({}))) as any;
-
-    if (!tokenRes.ok || !tokenData.access_token) {
-      console.error(`[Google OAuth] Token exchange failed:`, {
-        status: tokenRes.status,
-        error: tokenData.error || 'unknown_error',
-        error_description: tokenData.error_description || 'No description provided by Google',
-        redirect_uri_used: callbackUri,
+    const exchangeFn = async () => {
+      const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          code,
+          client_id: googleClientId,
+          client_secret: googleClientSecret,
+          redirect_uri: callbackUri,
+          grant_type: 'authorization_code',
+        }),
       });
-      return res.redirect('/?oauth_error=oauth_exchange_failed');
+
+      const tokenData = (await tokenRes.json().catch(() => ({}))) as any;
+
+      if (!tokenRes.ok || !tokenData.access_token) {
+        console.error(`[Google OAuth] Token exchange failed:`, {
+          status: tokenRes.status,
+          error: tokenData.error || 'unknown_error',
+          error_description: tokenData.error_description || 'No description provided by Google',
+          redirect_uri_used: callbackUri,
+        });
+        throw new Error('google_exchange_failed');
+      }
+
+      const profileRes = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
+        headers: { Authorization: `Bearer ${tokenData.access_token}` },
+      });
+      const gUser = (await profileRes.json().catch(() => ({}))) as any;
+
+      if (!profileRes.ok || !gUser.id) {
+        console.error(`[Google OAuth] User profile fetch failed:`, {
+          status: profileRes.status,
+        });
+        throw new Error('google_profile_failed');
+      }
+
+      const userId = await upsertOAuthUser(
+        'google',
+        gUser.id,
+        gUser.email ? gUser.email.split('@')[0] : `google_${gUser.id}`,
+        gUser.name || 'Google User',
+        gUser.picture || `https://api.dicebear.com/7.x/identicon/svg?seed=${gUser.id}`
+      );
+
+      return { userId };
+    };
+
+    // If an exchange is already running for this exact code, reuse its promise to avoid duplicate call & invalid_grant
+    let exchangePromise = activeCodeExchanges.get(code);
+    if (!exchangePromise) {
+      exchangePromise = exchangeFn();
+      activeCodeExchanges.set(code, exchangePromise);
+      exchangePromise.finally(() => {
+        setTimeout(() => activeCodeExchanges.delete(code), 30000);
+      });
     }
 
-    const profileRes = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
-      headers: { Authorization: `Bearer ${tokenData.access_token}` },
-    });
-    const gUser = (await profileRes.json().catch(() => ({}))) as any;
-
-    if (!profileRes.ok || !gUser.id) {
-      console.error(`[Google OAuth] User profile fetch failed:`, {
-        status: profileRes.status,
-      });
-      return res.redirect('/?oauth_error=oauth_exchange_failed');
-    }
-
-    const userId = await upsertOAuthUser(
-      'google',
-      gUser.id,
-      gUser.email ? gUser.email.split('@')[0] : `google_${gUser.id}`,
-      gUser.name || 'Google User',
-      gUser.picture || `https://api.dicebear.com/7.x/identicon/svg?seed=${gUser.id}`
-    );
+    const { userId } = await exchangePromise;
 
     return completeOAuthRedirect(
       req,
@@ -1101,6 +1161,14 @@ async function sendTelegramMessage(chatId: number | string, text: string) {
   }
 }
 
+function getTelegramWebhookSecret(): string {
+  const explicit = process.env.TELEGRAM_WEBHOOK_SECRET?.trim();
+  if (explicit) return explicit;
+  const botToken = process.env.TELEGRAM_BOT_TOKEN?.trim() || '';
+  const jwtSecret = process.env.JWT_SECRET?.trim() || 'pulsechat_tg_secret_salt';
+  return crypto.createHmac('sha256', jwtSecret).update(botToken).digest('hex').slice(0, 48);
+}
+
 export async function setupTelegramWebhook() {
   const { telegramBotToken, publicUrl } = getOAuthEnv();
   console.log(`[Telegram Setup] Webhook initialization:`, {
@@ -1112,9 +1180,12 @@ export async function setupTelegramWebhook() {
   if (telegramBotToken && publicUrl && publicUrl.startsWith('https://')) {
     try {
       const webhookUrl = `${publicUrl}/api/auth/telegram/webhook`;
-      const resp = await fetch(`https://api.telegram.org/bot${telegramBotToken}/setWebhook?url=${encodeURIComponent(webhookUrl)}`);
+      const secretToken = getTelegramWebhookSecret();
+      const resp = await fetch(
+        `https://api.telegram.org/bot${telegramBotToken}/setWebhook?url=${encodeURIComponent(webhookUrl)}&secret_token=${encodeURIComponent(secretToken)}`
+      );
       const data: any = await resp.json().catch(() => ({}));
-      console.log(`[Telegram] Webhook registered at ${webhookUrl}:`, data?.ok ? 'OK' : data?.description);
+      console.log(`[Telegram] Webhook registered at ${webhookUrl} with secret_token:`, data?.ok ? 'OK' : data?.description);
     } catch (e: any) {
       console.error('[Telegram] Failed to register webhook:', e.message || e);
     }
@@ -1153,6 +1224,22 @@ authRouter.post('/telegram/bot/session', authRateLimiter(20), async (req, res) =
 // 2. Telegram webhook for /start <token> messages from the bot
 authRouter.post('/telegram/webhook', async (req, res) => {
   try {
+    // Verify Telegram secret token header to ensure authenticity
+    const incomingSecret = req.headers['x-telegram-bot-api-secret-token'];
+    const expectedSecret = getTelegramWebhookSecret();
+
+    if (process.env.NODE_ENV === 'production') {
+      if (!incomingSecret || incomingSecret !== expectedSecret) {
+        console.warn('[Telegram Webhook] Unauthorized request rejected: X-Telegram-Bot-Api-Secret-Token mismatch or missing');
+        return res.status(403).json({ error: 'Unauthorized webhook' });
+      }
+    } else {
+      if (incomingSecret && incomingSecret !== expectedSecret) {
+        console.warn('[Telegram Webhook] Unauthorized request rejected: secret token mismatch');
+        return res.status(403).json({ error: 'Unauthorized webhook' });
+      }
+    }
+
     const update = req.body;
     const message = update?.message;
     if (!message || !message.text) {
