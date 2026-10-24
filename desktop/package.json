@@ -2,12 +2,13 @@
   "name": "pulse-chat-desktop",
   "version": "1.9.0",
   "description": "PulseChat Desktop App for Windows",
+  "author": "PulseChat",
   "main": "main.cjs",
   "scripts": {
     "start": "electron .",
     "pack": "electron-builder --dir",
     "dist": "electron-builder",
-    "build:exe": "electron-builder --win nsis portable"
+    "build:exe": "electron-builder --win nsis portable --publish never"
   },
   "build": {
     "appId": "com.pulsechat.desktop",
@@ -41,15 +42,18 @@
             "x64"
           ]
         }
-      ],
-      "artifactName": "PulseChat-${target}-${version}.${ext}"
+      ]
     },
     "nsis": {
+      "artifactName": "PulseChat-Setup-${version}.${ext}",
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "PulseChat"
+    },
+    "portable": {
+      "artifactName": "PulseChat-Portable-${version}.${ext}"
     }
   },
   "devDependencies": {
