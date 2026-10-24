@@ -180,4 +180,48 @@ export const migrations: Migration[] = [
       ];
     },
   },
+  {
+    version: 4,
+    name: '004_native_session_and_telegram_login_codes',
+    up: (isPostgres: boolean) => {
+      const timestampType = isPostgres ? 'TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP' : 'DATETIME DEFAULT CURRENT_TIMESTAMP';
+
+      return [
+        // 1. Add native_session_id to oauth_states
+        `ALTER TABLE oauth_states ADD COLUMN native_session_id TEXT;`,
+
+        // 2. Persistent table for native auth sessions
+        `CREATE TABLE IF NOT EXISTS native_auth_sessions (
+          id TEXT PRIMARY KEY,
+          provider TEXT NOT NULL,
+          code_challenge TEXT DEFAULT '',
+          code_challenge_method TEXT DEFAULT 'S256',
+          redirect_uri TEXT NOT NULL,
+          state TEXT DEFAULT '',
+          status TEXT DEFAULT 'pending',
+          auth_code TEXT,
+          user_id TEXT,
+          user_profile TEXT,
+          expires_at ${timestampType} NOT NULL,
+          created_at ${timestampType}
+        );`,
+        `CREATE INDEX IF NOT EXISTS idx_native_auth_sessions_id ON native_auth_sessions(id);`,
+
+        // 3. Persistent table for Telegram 6-digit login codes
+        `CREATE TABLE IF NOT EXISTS telegram_login_codes (
+          code TEXT PRIMARY KEY,
+          user_id TEXT NOT NULL,
+          telegram_id TEXT NOT NULL,
+          username TEXT,
+          display_name TEXT,
+          avatar_url TEXT,
+          expires_at ${timestampType} NOT NULL,
+          used INTEGER DEFAULT 0,
+          created_at ${timestampType}
+        );`,
+        `CREATE INDEX IF NOT EXISTS idx_telegram_login_codes_code ON telegram_login_codes(code);`,
+        `CREATE INDEX IF NOT EXISTS idx_telegram_login_codes_expires ON telegram_login_codes(expires_at);`,
+      ];
+    },
+  },
 ];

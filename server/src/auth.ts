@@ -244,16 +244,17 @@ export async function createOAuthState(
   clientState?: string,
   redirectUri?: string,
   codeChallenge?: string,
-  codeChallengeMethod: string = 'S256'
+  codeChallengeMethod: string = 'S256',
+  nativeSessionId?: string
 ): Promise<string> {
   const stateId = crypto.randomBytes(32).toString('hex');
   const now = new Date().toISOString();
   const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
 
   await db.run(`
-    INSERT INTO oauth_states (id, provider, client_state, redirect_uri, code_challenge, code_challenge_method, expires_at, used, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)
-  `, stateId, provider, clientState || '', redirectUri || '', codeChallenge || '', codeChallengeMethod, expiresAt, now);
+    INSERT INTO oauth_states (id, provider, client_state, redirect_uri, code_challenge, code_challenge_method, native_session_id, expires_at, used, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+  `, stateId, provider, clientState || '', redirectUri || '', codeChallenge || '', codeChallengeMethod, nativeSessionId || null, expiresAt, now);
 
   return stateId;
 }
@@ -264,10 +265,10 @@ export async function createOAuthState(
 export async function consumeOAuthState(
   stateId: string,
   provider: 'google' | 'github' | 'telegram'
-): Promise<{ clientState: string; redirectUri: string; codeChallenge: string; codeChallengeMethod: string } | null> {
+): Promise<{ clientState: string; redirectUri: string; codeChallenge: string; codeChallengeMethod: string; nativeSessionId?: string | null } | null> {
   const now = new Date().toISOString();
   const row = await db.get<any>(`
-    SELECT id, client_state, redirect_uri, code_challenge, code_challenge_method
+    SELECT id, client_state, redirect_uri, code_challenge, code_challenge_method, native_session_id
     FROM oauth_states
     WHERE id = ? AND provider = ? AND used = 0 AND expires_at > ?
   `, stateId, provider, now);
@@ -284,6 +285,7 @@ export async function consumeOAuthState(
     redirectUri: row.redirect_uri || '',
     codeChallenge: row.code_challenge || '',
     codeChallengeMethod: row.code_challenge_method || 'S256',
+    nativeSessionId: row.native_session_id || null,
   };
 }
 

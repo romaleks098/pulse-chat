@@ -157,7 +157,27 @@ export const api = {
       }),
     });
     if (!res.ok) throw new Error('Не удалось создать сессию Telegram бота');
-    return res.json() as Promise<{ token: string; botName: string; deepLink: string; expiresInSeconds: number }>;
+    return res.json() as Promise<{
+      token: string;
+      botName: string;
+      deepLink: string;
+      tgDeepLink?: string;
+      webDeepLink?: string;
+      expiresInSeconds: number;
+    }>;
+  },
+
+  async verifyLoginCode(code: string): Promise<{ token: string; refreshToken?: string; sessionId?: string; user: any }> {
+    const res = await fetch(`${API_BASE}/auth/telegram/code/verify`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.error || 'Ошибка проверки кода');
+    }
+    return data;
   },
 
   async checkTelegramBotSession(token: string) {

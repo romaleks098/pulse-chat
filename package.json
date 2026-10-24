@@ -1,6 +1,6 @@
 {
   "name": "pulse-chat",
-  "version": "1.9.0",
+  "version": "1.9.1",
   "type": "module",
   "private": true,
   "scripts": {
@@ -15,7 +15,7 @@
     "cap:sync": "cd client && npm run cap:sync",
     "cap:android": "cd client && npm run cap:android",
     "check:secrets": "node scripts/check_secrets.js",
-    "test:stages": "node scripts/test_stages_3_4.js && node scripts/test_db_heal_saved.js && node scripts/test_stages_5_6_7.js && node scripts/test_hotfix_blackscreen.js && node scripts/test_mobile_and_native_apps.js",
+    "test:stages": "node scripts/test_stages_3_4.js && node scripts/test_db_heal_saved.js && node scripts/test_stages_5_6_7.js && node scripts/test_hotfix_blackscreen.js && node scripts/test_mobile_and_native_apps.js && node scripts/test_v1_9_1_fixes.js",
     "test": "npm run test:stages"
   },
   "devDependencies": {

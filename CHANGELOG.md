@@ -12,6 +12,7 @@
 2. [Архитектура проекта и технологический стек](#2-архитектура-проекта)
 3. [Инструкция по разработке, тестированию и деплою](#3-инструкция-по-разработке-тестированию-и-деплою)
 4. [Хронология всех версий и решённых проблем](#4-хронология-всех-версий-и-решённых-проблем)
+   - [Версия 1.9.1 — Исправление запуска Windows .exe (относительные пути Vite), нативный OAuth без веб-редиректа, вход по 6-значному коду из Telegram](#версия-191)
    - [Версия 1.9.0 — Мобильная адаптация (< 768px), Автономные приложения (Android APK & Windows EXE), Нативная OAuth и CI/CD](#версия-190)
    - [Версия 1.8.2 — Автоопределение Telegram-бота (getMe), единая переменная TELEGRAM_BOT_TOKEN](#версия-182)
    - [Версия 1.8.1 — Hotfix: Устранение падения в чёрный экран после входа (Rules of Hooks & ErrorBoundary)](#версия-181)
@@ -96,6 +97,51 @@ git push origin main:master
 ---
 
 ## 4. Хронология всех версий и решённых проблем
+
+### Версия 1.9.1
+**Дата:** 24 октября 2026  
+**Категория:** Critical Bugfix / In-App Telegram Authentication / Desktop & Mobile Architecture  
+**Статус:** Исправление запуска Windows .exe, устранение выброса в браузер, вход по 6-значному коду  
+
+#### 1. Устранение пустого тёмно-синего экрана (#090d16) в Windows .exe:
+- **Проблема:** При запуске скомпилированного приложения Windows `.exe` (NSIS Setup или Portable) открывалось пустое тёмно-синее окно без кнопок, тайтлбара и формы входа.
+- **Корневая причина:** В `client/vite.config.ts` не был задан параметр `base: './'`. По умолчанию Vite генерировал `index.html` с абсолютными путями `<script src="/assets/index-xxx.js">`. Когда Electron открывал бандл через `loadFile(...)` по протоколу `file://`, пути разрешались в корень системного диска `file:///C:/assets/...`, Chromium выкидывал ошибку `net::ERR_FILE_NOT_FOUND`, и React не стартовал.
+- **Исправление:**
+  - В `client/vite.config.ts` установлен относительный базовый путь `base: './'`.
+  - В `client/index.html` все пути к фавиконке и манифесту приведены к относительным (`./logo.svg`, `./manifest.webmanifest`).
+  - В `desktop/main.cjs` добавлены обработчики событий `webContents.on('did-fail-load')` и `webContents.on('console-message')` для детальной диагностики рендерера.
+  - В IPC-обработчик `open-external` добавлено разрешение протоколов `tg://` и `pulsechat://`.
+  - Добавлен автоматизированный режим проверки `--test-run` в Electron. Локальный запуск подтвердил успешный рендеринг DOM, тайтлбара и экрана авторизации (`childCount: 2`, `htmlLength: 13789`, `hasTitlebar: true`, `hasAuthScreen: true`).
+
+#### 2. Устранение выбрасывания пользователя в браузер на сайт:
+- **Проблема:** При попытке авторизации через мобильное приложение Android или Windows внешняя OAuth-авторизация завершалась редиректом браузера на веб-сайт `https://pulse-chat-qel7.onrender.com/?auth=success`, оставляя пользователя в браузере вместо возврата в приложение.
+- **Корневая причина:** Идентификатор `native_session` передавался только в начальном URL `/api/auth/google`, но не сохранялся в базе данных `oauth_states`. После прохождения через Google/GitHub серверный `/callback` считывал параметры и считал запрос обычным входом с веб-страницы.
+- **Исправление:**
+  - Добавлена миграция базы данных `004_native_session_and_telegram_login_codes`, добавившая столбец `native_session_id` в таблицу `oauth_states`, а также персистентную таблицу `native_auth_sessions`.
+  - В `server/src/auth.ts` и `server/src/routes/auth.ts` сохранение `native_session_id` внедрено в функции `createOAuthState` и `consumeOAuthState`.
+  - В `completeOAuthRedirect` при наличии `native_session_id` сервер обновляет сессию в PostgreSQL, отправляет токен по сокет-каналу `notifyNativeAuthSuccess` и отдаёт специальную страницу возврата с автоматическим переходом `pulsechat://auth/callback?code=...`, крупной кнопкой «Вернуться в приложение PulseChat» и кнопкой закрытия вкладки `window.close()`. Браузер больше не редиректит на сайт!
+
+#### 3. Вход по 6-значному коду из Telegram без открытия браузера:
+- **Проблема:** Необходимость открывать браузер для авторизации в нативном приложении.
+- **Исправление:**
+  - В Telegram-боте реализован перехват команд `/code`, `/login` и `/start`: бот генерирует 6-значный одноразовый числовой код, сохраняет его в таблицу `telegram_login_codes` (срок жизни 10 минут) и отправляет пользователю в Telegram с возможностью копирования в один клик (`<code>123 456</code>`).
+  - Создан защищённый эндпоинт `POST /api/auth/telegram/code/verify` с ограничением частоты запросов, валидацией срока действия и мгновенной выдачей сессии.
+  - На экран авторизации `AuthScreen.tsx` добавлена кнопка «Войти по 6-значному коду из Telegram» (бейдж «Без браузера») и модальное окно `TelegramCodeModal.tsx` с удобным вводом цифр и моментальным авто-входом.
+  - В `TelegramBotModal.tsx` кнопка «Открыть Telegram» переведена на нативный протокол `tg://resolve?domain=...&start=...` с автоматическим запуском десктопного или мобильного клиента Telegram и опцией переключения на ввод 6-значного кода.
+
+#### 4. Синхронизация Android APK:
+- Свежий бандл `dist` скопирован в `client/android/app/src/main/assets/public/` с помощью `npx cap copy android`.
+- Базовый путь ассетов внутри APK приведен к `./assets/...`.
+
+**Затронутые файлы:**
+- `client/vite.config.ts`, `client/index.html`
+- `desktop/main.cjs`
+- `server/src/migrations/schema.ts`, `server/src/auth.ts`, `server/src/routes/auth.ts`
+- `client/src/services/api.ts`, `client/src/components/TelegramCodeModal.tsx`, `client/src/components/TelegramBotModal.tsx`, `client/src/components/AuthScreen.tsx`
+- `package.json`, `client/package.json`, `server/package.json`, `desktop/package.json`
+- `scripts/test_v1_9_1_fixes.js`
+
+---
 
 ### Версия 1.9.0
 **Дата:** 24 октября 2026  

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
-import { ExternalLink, Copy, Check, RefreshCw, Send, ShieldCheck, Globe } from 'lucide-react';
+import { ExternalLink, Copy, Check, RefreshCw, Send, ShieldCheck, Globe, KeyRound } from 'lucide-react';
 import { io, Socket } from 'socket.io-client';
 import { SOCKET_URL } from '../config';
 import { api } from '../services/api';
@@ -12,11 +12,23 @@ interface TelegramBotModalProps {
   isOpen: boolean;
   onClose: () => void;
   onSuccess: (data: { token: string; refreshToken?: string; user: any }) => void;
+  onOpenCodeModal?: () => void;
 }
 
-export const TelegramBotModal: React.FC<TelegramBotModalProps> = ({ isOpen, onClose, onSuccess }) => {
+export const TelegramBotModal: React.FC<TelegramBotModalProps> = ({
+  isOpen,
+  onClose,
+  onSuccess,
+  onOpenCodeModal,
+}) => {
   const [loading, setLoading] = useState(true);
-  const [botSession, setBotSession] = useState<{ token: string; botName: string; deepLink: string } | null>(null);
+  const [botSession, setBotSession] = useState<{
+    token: string;
+    botName: string;
+    deepLink: string;
+    tgDeepLink?: string;
+    webDeepLink?: string;
+  } | null>(null);
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [statusText, setStatusText] = useState('Ожидаем нажатия «Запустить» в Telegram...');
@@ -171,23 +183,49 @@ export const TelegramBotModal: React.FC<TelegramBotModalProps> = ({ isOpen, onCl
           {/* Action buttons */}
           <div className="space-y-2.5">
             {botSession && (
-              <a
-                href={botSession.deepLink}
-                target="_blank"
-                rel="noreferrer"
-                className="w-full py-3 px-4 bg-[#229ED9] hover:bg-[#1f8ec4] text-white font-semibold rounded-xl flex items-center justify-center gap-2 shadow-lg shadow-[#229ED9]/25 transition-all"
+              <button
+                type="button"
+                onClick={() => {
+                  const tgLink = botSession.tgDeepLink || `tg://resolve?domain=${botSession.botName}&start=${botSession.token}`;
+                  const webLink = botSession.webDeepLink || `https://t.me/${botSession.botName}?start=${botSession.token}`;
+                  if ((window as any).electronAPI?.openExternal) {
+                    (window as any).electronAPI.openExternal(tgLink);
+                  } else {
+                    window.location.href = tgLink;
+                    setTimeout(() => {
+                      if (!document.hidden) {
+                        window.open(webLink, '_blank');
+                      }
+                    }, 1200);
+                  }
+                }}
+                className="w-full py-3.5 px-4 bg-[#229ED9] hover:bg-[#1f8ec4] text-white font-semibold rounded-xl flex items-center justify-center gap-2 shadow-lg shadow-[#229ED9]/25 transition-all cursor-pointer group active:scale-98"
               >
-                <Send className="w-4 h-4" />
+                <Send className="w-4 h-4 group-hover:translate-x-0.5 transition-transform" />
                 <span>Открыть Telegram (@{botSession.botName || 'PulseChatBot'})</span>
                 <ExternalLink className="w-3.5 h-3.5 opacity-70" />
-              </a>
+              </button>
+            )}
+
+            {onOpenCodeModal && (
+              <button
+                type="button"
+                onClick={() => {
+                  onClose();
+                  onOpenCodeModal();
+                }}
+                className="w-full py-2.5 px-3 bg-sky-500/10 hover:bg-sky-500/20 text-sky-400 hover:text-sky-300 rounded-xl text-xs font-semibold flex items-center justify-center gap-2 transition-all border border-sky-500/25 cursor-pointer"
+              >
+                <KeyRound className="w-3.5 h-3.5" />
+                <span>Ввести 6-значный код из бота</span>
+              </button>
             )}
 
             <div className="grid grid-cols-2 gap-2">
               <button
                 type="button"
                 onClick={handleCopyLink}
-                className="py-2.5 px-3 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white rounded-xl text-xs font-medium flex items-center justify-center gap-2 transition-all border border-slate-700/60"
+                className="py-2.5 px-3 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white rounded-xl text-xs font-medium flex items-center justify-center gap-2 transition-all border border-slate-700/60 cursor-pointer"
               >
                 {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
                 <span>{copied ? 'Скопировано!' : 'Копировать ссылку'}</span>
@@ -196,7 +234,7 @@ export const TelegramBotModal: React.FC<TelegramBotModalProps> = ({ isOpen, onCl
               <button
                 type="button"
                 onClick={handleOpenBrowserOAuth}
-                className="py-2.5 px-3 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white rounded-xl text-xs font-medium flex items-center justify-center gap-2 transition-all border border-slate-700/60"
+                className="py-2.5 px-3 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white rounded-xl text-xs font-medium flex items-center justify-center gap-2 transition-all border border-slate-700/60 cursor-pointer"
               >
                 <Globe className="w-3.5 h-3.5 text-sky-400" />
                 <span>Веб-страница</span>
@@ -208,7 +246,7 @@ export const TelegramBotModal: React.FC<TelegramBotModalProps> = ({ isOpen, onCl
           <div className="p-3.5 rounded-xl bg-[var(--bg-input,#080c14)] border border-[var(--border-subtle,rgba(255,255,255,0.08))] text-xs text-[var(--text-secondary,#94a3b8)] flex items-start gap-2.5">
             <ShieldCheck className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
             <span>
-              Вам не нужно вводить пароль. После нажатия <strong>/start</strong> в Telegram сессия подтвердится мгновенно по WebSocket.
+              Вам не нужно вводить логин и пароль. Нажмите кнопку выше или отправьте боту <code>/code</code> в Telegram для входа без браузера!
             </span>
           </div>
         </div>

@@ -120,6 +120,54 @@ function createWindow() {
     callback(false);
   });
 
+  // WebContents diagnostics and error handling
+  mainWindow.webContents.on('did-fail-load', (event, errorCode, errorDescription, validatedURL) => {
+    console.error(`[Electron] Failed to load URL: ${validatedURL} (${errorCode}: ${errorDescription})`);
+  });
+
+  mainWindow.webContents.on('console-message', (event, level, message, line, sourceId) => {
+    console.log(`[Renderer Log ${level}]: ${message} (${sourceId}:${line})`);
+  });
+
+  // Automated test-run mode for CI / build verification
+  const isTestRun = process.argv.includes('--test-run');
+  if (isTestRun) {
+    mainWindow.webContents.once('dom-ready', async () => {
+      try {
+        // Small delay for React hydration
+        setTimeout(async () => {
+          const rootContent = await mainWindow.webContents.executeJavaScript(`
+            (() => {
+              const root = document.getElementById('root');
+              return {
+                hasRoot: Boolean(root),
+                childCount: root ? root.children.length : 0,
+                htmlLength: root ? root.innerHTML.length : 0,
+                title: document.title,
+                hasTitlebar: Boolean(document.querySelector('.app-region-drag') || document.querySelector('button')),
+                hasAuthScreen: Boolean(document.querySelector('form') || document.querySelector('input'))
+              };
+            })()
+          `);
+          console.log('[Electron Test-Run DOM Result]:', JSON.stringify(rootContent));
+          if (rootContent.hasRoot && rootContent.childCount > 0) {
+            console.log('✅ [Electron Test-Run SUCCESS] React interface and Titlebar rendered successfully!');
+            app.isQuiting = true;
+            app.exit(0);
+          } else {
+            console.error('❌ [Electron Test-Run ERROR] DOM root is empty!');
+            app.isQuiting = true;
+            app.exit(1);
+          }
+        }, 500);
+      } catch (err) {
+        console.error('❌ [Electron Test-Run ERROR]:', err);
+        app.isQuiting = true;
+        app.exit(1);
+      }
+    });
+  }
+
   // Load offline local application bundle - NO remote URL loading
   const bundlePath = resolveBundlePath();
   if (bundlePath) {
@@ -191,7 +239,7 @@ ipcMain.handle('window-is-maximized', () => {
 });
 
 ipcMain.on('open-external', (_event, url) => {
-  if (url && (url.startsWith('https://') || url.startsWith('http://'))) {
+  if (url && (url.startsWith('https://') || url.startsWith('http://') || url.startsWith('tg://') || url.startsWith('pulsechat://'))) {
     shell.openExternal(url);
   }
 });

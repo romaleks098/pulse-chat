@@ -1,9 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { useChat } from '../context/ChatContext';
 import { useTheme } from '../context/ThemeContext';
-import { MessageSquare, Lock, User as UserIcon, Sparkles, ArrowRight, Sun, Moon, X, AlertTriangle } from 'lucide-react';
+import { MessageSquare, Lock, User as UserIcon, Sparkles, ArrowRight, Sun, Moon, X, AlertTriangle, KeyRound } from 'lucide-react';
 import { startOAuthPKCE } from '../utils/pkce';
 import { TelegramBotModal } from './TelegramBotModal';
+import { TelegramCodeModal } from './TelegramCodeModal';
 
 const AVATAR_PRESETS = [
   'https://api.dicebear.com/7.x/bottts/svg?seed=Felix',
@@ -29,6 +30,7 @@ export const AuthScreen: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [oauthLoading, setOauthLoading] = useState<'telegram' | 'google' | 'github' | null>(null);
   const [showTelegramModal, setShowTelegramModal] = useState(false);
+  const [showCodeModal, setShowCodeModal] = useState(false);
 
   useEffect(() => {
     const urlParams = new URLSearchParams(window.location.search);
@@ -270,6 +272,19 @@ export const AuthScreen: React.FC = () => {
             </button>
           </div>
 
+          {/* In-app Telegram 6-digit code login - ZERO BROWSER NEEDED */}
+          <button
+            type="button"
+            onClick={() => setShowCodeModal(true)}
+            className="w-full mt-2.5 py-2.5 px-3 bg-[#229ED9]/10 hover:bg-[#229ED9]/20 border border-[#229ED9]/30 rounded-xl flex items-center justify-center gap-2 text-xs font-semibold text-[#229ED9] hover:text-sky-300 transition-all cursor-pointer group active:scale-98 shadow-sm"
+          >
+            <KeyRound className="w-4 h-4 text-[#229ED9] group-hover:scale-110 transition-transform" />
+            <span>Войти по 6-значному коду из Telegram</span>
+            <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-[#229ED9]/20 text-[#229ED9] uppercase tracking-wider font-bold">
+              Без браузера
+            </span>
+          </button>
+
           <div className="relative flex items-center justify-center my-5">
             <div className="border-t border-[var(--border-subtle,rgba(255,255,255,0.08))] w-full" />
             <span className="bg-[var(--bg-surface,#141d33)] px-3 text-[10px] uppercase tracking-wider text-[var(--text-muted,#94a3b8)] font-semibold absolute">
@@ -382,6 +397,13 @@ export const AuthScreen: React.FC = () => {
       <TelegramBotModal
         isOpen={showTelegramModal}
         onClose={() => setShowTelegramModal(false)}
+        onSuccess={(data) => applyAuthenticatedSession(data)}
+        onOpenCodeModal={() => setShowCodeModal(true)}
+      />
+
+      <TelegramCodeModal
+        isOpen={showCodeModal}
+        onClose={() => setShowCodeModal(false)}
         onSuccess={(data) => applyAuthenticatedSession(data)}
       />
     </div>

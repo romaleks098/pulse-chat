@@ -606,6 +606,8 @@ authRouter.post('/native/session', authRateLimiter(30), async (req, res) => {
 
   const nativeSessionId = 'nat_' + crypto.randomUUID().replace(/-/g, '');
   const expiresAt = Date.now() + 10 * 60 * 1000; // 10 minutes TTL
+  const expiresAtIso = new Date(expiresAt).toISOString();
+  const nowIso = new Date().toISOString();
 
   nativeAuthSessions.set(nativeSessionId, {
     id: nativeSessionId,
@@ -618,6 +620,16 @@ authRouter.post('/native/session', authRateLimiter(30), async (req, res) => {
     redirectUri: redirect_uri || 'pulsechat://auth/callback',
     state: state || '',
   });
+
+  // Persist into database so server restart/cold start doesn't lose the native session
+  try {
+    await db.run(`
+      INSERT INTO native_auth_sessions (id, provider, code_challenge, code_challenge_method, redirect_uri, state, status, expires_at, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+    `, nativeSessionId, provider, code_challenge || '', code_challenge_method || 'S256', redirect_uri || 'pulsechat://auth/callback', state || '', expiresAtIso, nowIso);
+  } catch (err: any) {
+    console.warn('[Native Auth] Could not persist native session to DB:', err.message);
+  }
 
   const { publicUrl } = getOAuthEnv();
   const baseUrl = publicUrl || (process.env.NODE_ENV === 'production' ? 'https://pulse-chat-qel7.onrender.com' : 'http://localhost:3001');
@@ -632,7 +644,30 @@ authRouter.post('/native/session', authRateLimiter(30), async (req, res) => {
 
 authRouter.get('/native/session/:id', async (req, res) => {
   const { id } = req.params;
-  const session = nativeAuthSessions.get(id);
+  let session = nativeAuthSessions.get(id);
+
+  if (!session) {
+    try {
+      const row = await db.get<any>('SELECT * FROM native_auth_sessions WHERE id = ?', id);
+      if (row && new Date(row.expires_at).getTime() > Date.now()) {
+        session = {
+          id: row.id,
+          createdAt: new Date(row.created_at).getTime(),
+          expiresAt: new Date(row.expires_at).getTime(),
+          status: row.status,
+          provider: row.provider,
+          codeChallenge: row.code_challenge,
+          codeChallengeMethod: row.code_challenge_method,
+          redirectUri: row.redirect_uri,
+          state: row.state,
+          authCode: row.auth_code,
+          user: row.user_profile ? JSON.parse(row.user_profile) : null,
+        };
+        nativeAuthSessions.set(id, session);
+      }
+    } catch (_) {}
+  }
+
   if (!session || session.expiresAt < Date.now()) {
     return res.status(404).json({ error: 'Сессия устарела или не найдена', status: 'expired' });
   }
@@ -647,6 +682,7 @@ authRouter.get('/native/session/:id', async (req, res) => {
 
 // Helper to redirect OAuth callback securely without tokens in URL:
 // If PKCE was initiated, creates one-time auth code and redirects to ${redirect_uri}?code=${code}&state=${state}
+// If native app session, sends deep link HTML + triggers WebSocket and DOES NOT open web messenger
 // If direct browser without PKCE, sets httpOnly cookie and redirects cleanly to /?auth=success
 async function completeOAuthRedirect(
   req: Request,
@@ -655,18 +691,48 @@ async function completeOAuthRedirect(
   state?: string,
   codeChallenge?: string,
   codeChallengeMethod?: string,
-  redirectUri?: string
+  redirectUri?: string,
+  explicitNativeSessionId?: string
 ) {
   // Check if this was a native app device auth session
-  const nativeSessionId = (req.query.native_session as string) || (state && state.startsWith('nat_') ? state : undefined);
-  if (nativeSessionId && nativeAuthSessions.has(nativeSessionId)) {
-    const natSess = nativeAuthSessions.get(nativeSessionId)!;
+  const nativeSessionId =
+    explicitNativeSessionId ||
+    (req.query.native_session as string) ||
+    (state && String(state).startsWith('nat_') ? String(state) : undefined);
+
+  if (nativeSessionId) {
+    let natSess = nativeAuthSessions.get(nativeSessionId);
+    if (!natSess) {
+      try {
+        const dbRow = await db.get<any>('SELECT * FROM native_auth_sessions WHERE id = ?', nativeSessionId);
+        if (dbRow) {
+          natSess = {
+            id: dbRow.id,
+            createdAt: new Date(dbRow.created_at).getTime(),
+            expiresAt: new Date(dbRow.expires_at).getTime(),
+            status: dbRow.status,
+            provider: dbRow.provider,
+            codeChallenge: dbRow.code_challenge,
+            codeChallengeMethod: dbRow.code_challenge_method,
+            redirectUri: dbRow.redirect_uri,
+            state: dbRow.state,
+          };
+          nativeAuthSessions.set(nativeSessionId, natSess);
+        }
+      } catch (_) {}
+    }
+
+    const effectiveCodeChallenge = natSess?.codeChallenge || codeChallenge || '';
+    const effectiveCodeChallengeMethod = natSess?.codeChallengeMethod || codeChallengeMethod || 'S256';
+    const effectiveRedirectUri = natSess?.redirectUri || redirectUri || 'pulsechat://auth/callback';
+
     const authCode = await createAuthCode(
       userId,
-      natSess.codeChallenge,
-      natSess.codeChallengeMethod || 'S256',
-      natSess.redirectUri
+      effectiveCodeChallenge,
+      effectiveCodeChallengeMethod,
+      effectiveRedirectUri
     );
+
     const user = await db.get<any>('SELECT id, username, display_name, avatar_url FROM users WHERE id = ?', userId);
     const userProfile = {
       id: user?.id || userId,
@@ -674,17 +740,31 @@ async function completeOAuthRedirect(
       displayName: user?.display_name || user?.username || 'User',
       avatarUrl: user?.avatar_url || '',
     };
-    natSess.status = 'completed';
-    natSess.authCode = authCode;
-    natSess.user = userProfile;
+
+    if (natSess) {
+      natSess.status = 'completed';
+      natSess.authCode = authCode;
+      natSess.user = userProfile;
+    }
+
+    try {
+      await db.run(
+        'UPDATE native_auth_sessions SET status = ?, auth_code = ?, user_id = ?, user_profile = ? WHERE id = ?',
+        'completed',
+        authCode,
+        userId,
+        JSON.stringify(userProfile),
+        nativeSessionId
+      );
+    } catch (_) {}
 
     notifyNativeAuthSuccess(nativeSessionId, {
       code: authCode,
-      state: natSess.state,
+      state: natSess?.state || state || '',
       user: userProfile,
     });
 
-    const deepLink = `pulsechat://auth/callback?code=${encodeURIComponent(authCode)}&state=${encodeURIComponent(natSess.state || '')}`;
+    const deepLink = `pulsechat://auth/callback?code=${encodeURIComponent(authCode)}&state=${encodeURIComponent(natSess?.state || state || '')}`;
 
     return res.send(`
       <!DOCTYPE html>
@@ -695,24 +775,31 @@ async function completeOAuthRedirect(
         <title>Вход выполнен · PulseChat</title>
         <style>
           body { margin: 0; background: #090d16; color: #f8fafc; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 20px; box-sizing: border-box; }
-          .card { width: 100%; max-width: 420px; padding: 36px 28px; background: #141d33; border: 1px solid rgba(255,255,255,0.1); border-radius: 28px; text-align: center; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.5); }
-          .icon { width: 64px; height: 64px; margin: 0 auto 20px; background: rgba(16, 185, 129, 0.15); border: 1px solid rgba(16, 185, 129, 0.3); border-radius: 20px; display: flex; align-items: center; justify-content: center; font-size: 32px; color: #10b981; }
-          h2 { margin: 0 0 8px; font-size: 20px; font-weight: 700; color: #fff; }
-          p { margin: 0 0 24px; font-size: 13px; color: #94a3b8; line-height: 1.5; }
-          .btn { display: inline-flex; align-items: center; justify-content: center; width: 100%; padding: 14px 20px; background: #6366f1; color: #fff; text-decoration: none; border-radius: 14px; font-weight: 600; font-size: 14px; box-shadow: 0 10px 15px -3px rgba(99, 102, 241, 0.4); box-sizing: border-box; }
+          .card { width: 100%; max-width: 440px; padding: 40px 28px; background: #141d33; border: 1px solid rgba(255,255,255,0.1); border-radius: 28px; text-align: center; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.5); }
+          .icon { width: 68px; height: 68px; margin: 0 auto 20px; background: rgba(16, 185, 129, 0.15); border: 1px solid rgba(16, 185, 129, 0.3); border-radius: 22px; display: flex; align-items: center; justify-content: center; font-size: 34px; color: #10b981; }
+          h2 { margin: 0 0 10px; font-size: 22px; font-weight: 700; color: #fff; }
+          p { margin: 0 0 24px; font-size: 14px; color: #94a3b8; line-height: 1.5; }
+          .btn-primary { display: inline-flex; align-items: center; justify-content: center; width: 100%; padding: 15px 20px; background: #6366f1; color: #fff; text-decoration: none; border-radius: 14px; font-weight: 600; font-size: 15px; box-shadow: 0 10px 15px -3px rgba(99, 102, 241, 0.4); box-sizing: border-box; transition: background 0.2s; }
+          .btn-primary:hover { background: #4f46e5; }
+          .btn-secondary { display: inline-flex; align-items: center; justify-content: center; width: 100%; margin-top: 12px; padding: 12px 20px; background: transparent; color: #94a3b8; border: 1px solid rgba(255,255,255,0.1); border-radius: 14px; font-size: 13px; font-weight: 500; cursor: pointer; box-sizing: border-box; }
+          .btn-secondary:hover { color: #f8fafc; border-color: rgba(255,255,255,0.2); }
         </style>
         <script>
-          setTimeout(() => {
+          try {
             window.location.href = "${deepLink}";
-          }, 250);
+          } catch (e) {}
+          setTimeout(() => {
+            try { window.close(); } catch (_) {}
+          }, 3000);
         </script>
       </head>
       <body>
         <div class="card">
           <div class="icon">✓</div>
-          <h2>Вход выполнен!</h2>
-          <p>Авторизация прошла успешно. Возвращаемся в приложение PulseChat...</p>
-          <a href="${deepLink}" class="btn">Открыть приложение PulseChat</a>
+          <h2>Вход подтверждён!</h2>
+          <p>Авторизация успешно завершена. Приложение PulseChat должно открыться автоматически.</p>
+          <a href="${deepLink}" class="btn-primary">Вернуться в приложение PulseChat</a>
+          <button type="button" class="btn-secondary" onclick="window.close();">Закрыть окно</button>
         </div>
       </body>
       </html>
@@ -786,10 +873,14 @@ const activeCodeExchanges = new Map<string, Promise<any>>();
 // --- GITHUB ---
 authRouter.get('/github', async (req, res) => {
   const { githubClientId } = getOAuthEnv();
-  const { redirect_uri, code_challenge, code_challenge_method, state } = req.query as any;
+  const { redirect_uri, code_challenge, code_challenge_method, state, native_session } = req.query as any;
+
+  const nativeSessionId =
+    (native_session as string) ||
+    (state && String(state).startsWith('nat_') ? String(state) : undefined);
 
   // Persist state in PostgreSQL (survives process restarts and cold boots)
-  const stateId = await createOAuthState('github', state, redirect_uri, code_challenge, code_challenge_method);
+  const stateId = await createOAuthState('github', state, redirect_uri, code_challenge, code_challenge_method, nativeSessionId);
 
   // Set signed/secure httpOnly cookie as well for dual-channel verification
   res.cookie('pulse_oauth_state', stateId, {
@@ -878,6 +969,10 @@ authRouter.get('/github/callback', async (req, res) => {
   const codeChallengeMethod = savedState?.codeChallengeMethod || (req.query.code_challenge_method as string) || 'S256';
   const redirectUri = savedState?.redirectUri || (req.query.redirect_uri as string);
   const stateVal = savedState?.clientState || (req.query.state as string);
+  const nativeSessionId =
+    savedState?.nativeSessionId ||
+    (req.query.native_session as string) ||
+    (stateVal && String(stateVal).startsWith('nat_') ? String(stateVal) : undefined);
 
   // Direct Dev Auth flow
   if (directAuth) {
@@ -896,7 +991,8 @@ authRouter.get('/github/callback', async (req, res) => {
       stateVal,
       codeChallenge,
       codeChallengeMethod,
-      redirectUri
+      redirectUri,
+      nativeSessionId
     );
   }
 
@@ -984,7 +1080,8 @@ authRouter.get('/github/callback', async (req, res) => {
       stateVal,
       codeChallenge,
       codeChallengeMethod,
-      redirectUri
+      redirectUri,
+      nativeSessionId
     );
   } catch (err: any) {
     console.error('[GitHub OAuth] Internal error:', err.message || err);
@@ -995,10 +1092,14 @@ authRouter.get('/github/callback', async (req, res) => {
 // --- GOOGLE ---
 authRouter.get('/google', async (req, res) => {
   const { googleClientId } = getOAuthEnv();
-  const { redirect_uri, code_challenge, code_challenge_method, state } = req.query as any;
+  const { redirect_uri, code_challenge, code_challenge_method, state, native_session } = req.query as any;
+
+  const nativeSessionId =
+    (native_session as string) ||
+    (state && String(state).startsWith('nat_') ? String(state) : undefined);
 
   // Persist state in PostgreSQL (survives process restarts and cold boots)
-  const stateId = await createOAuthState('google', state, redirect_uri, code_challenge, code_challenge_method);
+  const stateId = await createOAuthState('google', state, redirect_uri, code_challenge, code_challenge_method, nativeSessionId);
 
   // Set signed/secure httpOnly cookie as well for dual-channel verification
   res.cookie('pulse_oauth_state', stateId, {
@@ -1088,6 +1189,10 @@ authRouter.get('/google/callback', async (req, res) => {
   const codeChallengeMethod = savedState?.codeChallengeMethod || (req.query.code_challenge_method as string) || 'S256';
   const redirectUri = savedState?.redirectUri || (req.query.redirect_uri as string);
   const stateVal = savedState?.clientState || (req.query.state as string);
+  const nativeSessionId =
+    savedState?.nativeSessionId ||
+    (req.query.native_session as string) ||
+    (stateVal && String(stateVal).startsWith('nat_') ? String(stateVal) : undefined);
 
   if (directAuth) {
     const cleanUser = email.split('@')[0].replace(/[^a-zA-Z0-9_-]/g, '') || 'google_user';
@@ -1105,7 +1210,8 @@ authRouter.get('/google/callback', async (req, res) => {
       stateVal,
       codeChallenge,
       codeChallengeMethod,
-      redirectUri
+      redirectUri,
+      nativeSessionId
     );
   }
 
@@ -1196,7 +1302,8 @@ authRouter.get('/google/callback', async (req, res) => {
       stateVal,
       codeChallenge,
       codeChallengeMethod,
-      redirectUri
+      redirectUri,
+      nativeSessionId
     );
   } catch (err: any) {
     console.error('[Google OAuth] Internal error:', err.message || err);
@@ -1375,14 +1482,14 @@ setInterval(() => {
   }
 }, 60 * 1000);
 
-async function sendTelegramMessage(chatId: number | string, text: string) {
+async function sendTelegramMessage(chatId: number | string, text: string, parseMode: string = 'HTML') {
   const { telegramBotToken } = getOAuthEnv();
   if (!telegramBotToken) return;
   try {
     await fetch(`https://api.telegram.org/bot${telegramBotToken}/sendMessage`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: chatId, text }),
+      body: JSON.stringify({ chat_id: chatId, text, parse_mode: parseMode }),
     });
   } catch (e: any) {
     console.error('Failed to send Telegram message:', e.message || e);
@@ -1472,17 +1579,20 @@ authRouter.post('/telegram/bot/session', authRateLimiter(20), async (req, res) =
     console.warn('[Telegram] Session created but TELEGRAM_BOT_TOKEN is not configured on server');
   }
 
-  const deepLink = `https://t.me/${botUsername}?start=${token}`;
+  const tgDeepLink = `tg://resolve?domain=${botUsername}&start=${token}`;
+  const webDeepLink = `https://t.me/${botUsername}?start=${token}`;
 
   res.json({
     token,
     botName: botUsername,
-    deepLink,
+    deepLink: tgDeepLink,
+    tgDeepLink,
+    webDeepLink,
     expiresInSeconds: 300,
   });
 });
 
-// 2. Telegram webhook for /start <token> messages from the bot
+// 2. Telegram webhook for /start <token> messages and 6-digit /code generation
 authRouter.post('/telegram/webhook', async (req, res) => {
   try {
     // Verify Telegram secret token header in constant time to prevent timing attacks
@@ -1502,12 +1612,68 @@ authRouter.post('/telegram/webhook', async (req, res) => {
 
     const text = message.text.trim();
     const match = text.match(/^\/start\s+(tg_[a-zA-Z0-9_-]+|[a-zA-Z0-9_-]+)/i);
-    if (!match) {
+
+    // Check if user requested a 6-digit login code via /code, /login, or clean /start
+    const isCodeCommand =
+      text === '/code' ||
+      text.startsWith('/code') ||
+      text === '/login' ||
+      text.startsWith('/login') ||
+      text === '/start';
+
+    if (!match && isCodeCommand) {
       const { telegramBotToken } = getOAuthEnv();
-      if (text.startsWith('/start') && telegramBotToken) {
+      const tgUser = message.from;
+      if (!tgUser) {
+        return res.sendStatus(200);
+      }
+
+      // Generate secure 6-digit numeric code e.g. 849201
+      const code = Math.floor(100000 + Math.random() * 900000).toString();
+      const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+      const now = new Date().toISOString();
+
+      const displayName = [tgUser.first_name, tgUser.last_name].filter(Boolean).join(' ') || tgUser.username || 'Telegram User';
+      const avatarUrl = `https://api.dicebear.com/7.x/bottts/svg?seed=tg_${tgUser.id}`;
+
+      const userId = await upsertOAuthUser(
+        'telegram',
+        String(tgUser.id),
+        tgUser.username || `tg_${tgUser.id}`,
+        displayName,
+        avatarUrl
+      );
+
+      // Save into DB
+      try {
+        await db.run(`
+          INSERT INTO telegram_login_codes (code, user_id, telegram_id, username, display_name, avatar_url, expires_at, used, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)
+        `, code, userId, String(tgUser.id), tgUser.username || `tg_${tgUser.id}`, displayName, avatarUrl, expiresAt, now);
+      } catch (err: any) {
+        console.error('[Telegram Code] DB save error:', err.message);
+      }
+
+      if (telegramBotToken) {
         await sendTelegramMessage(
           message.chat.id,
-          '👋 Здравствуйте!\n\nЭтот бот используется для быстрой и безопасной авторизации в PulseChat.\n\nДля входа откройте веб-приложение PulseChat и нажмите кнопку «Telegram».'
+          `👋 Здравствуйте, <b>${displayName.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</b>!\n\n` +
+          `🔐 Ваш 6-значный код для входа в <b>PulseChat</b>:\n\n` +
+          `👉 <code>${code}</code> 👈 <i>(нажмите, чтобы скопировать)</i>\n\n` +
+          `📱 Введите этот код в приложении на ПК или телефоне без единого перехода в браузер!\n` +
+          `⏳ Код действует 10 минут.`
+        );
+      }
+      return res.sendStatus(200);
+    }
+
+    if (!match) {
+      const { telegramBotToken } = getOAuthEnv();
+      if (telegramBotToken) {
+        await sendTelegramMessage(
+          message.chat.id,
+          '👋 Здравствуйте!\n\nЭтот бот используется для быстрой авторизации в PulseChat.\n\n' +
+          'Отправьте команду <b>/code</b>, чтобы получить 6-значный код для входа без браузера!'
         );
       }
       return res.sendStatus(200);
@@ -1584,7 +1750,81 @@ authRouter.post('/telegram/webhook', async (req, res) => {
   }
 });
 
-// 3. Fallback / Test endpoint to confirm Telegram login without live webhook
+// 3. Verify Telegram 6-digit login code
+authRouter.post('/telegram/code/verify', authRateLimiter(20), async (req, res) => {
+  const { code } = req.body;
+  const cleanCode = String(code || '').replace(/\D/g, '').trim();
+
+  if (!cleanCode || cleanCode.length !== 6) {
+    return res.status(400).json({ error: 'Код должен содержать ровно 6 цифр' });
+  }
+
+  const now = new Date().toISOString();
+  const codeRow = await db.get<any>(`
+    SELECT code, user_id, telegram_id, username, display_name, avatar_url, expires_at, used
+    FROM telegram_login_codes
+    WHERE code = ?
+  `, cleanCode);
+
+  if (!codeRow) {
+    return res.status(400).json({ error: 'Неверный код. Отправьте /code нашему Telegram-боту, чтобы получить свежий код.' });
+  }
+
+  if (codeRow.used === 1 || codeRow.used === true) {
+    return res.status(400).json({ error: 'Этот код уже был использован. Запросите новый код у бота командой /code.' });
+  }
+
+  if (new Date(codeRow.expires_at).getTime() < Date.now()) {
+    return res.status(400).json({ error: 'Срок действия кода истёк (10 минут). Запросите новый код у бота командой /code.' });
+  }
+
+  // Mark as used
+  await db.run('UPDATE telegram_login_codes SET used = 1 WHERE code = ?', cleanCode);
+
+  const userId = codeRow.user_id;
+  const user = await db.get<any>('SELECT id, username, display_name, avatar_url FROM users WHERE id = ?', userId);
+  const userProfile = {
+    id: user?.id || userId,
+    username: user?.username || codeRow.username,
+    displayName: user?.display_name || codeRow.display_name,
+    avatarUrl: user?.avatar_url || codeRow.avatar_url,
+  };
+
+  const deviceInfo = parseDeviceInfo(req.headers['user-agent']);
+  const ip = req.ip || req.socket.remoteAddress || '';
+  const session = await createSession(userId, deviceInfo, ip);
+  setRefreshCookie(res, session.refreshToken);
+
+  res.json({
+    token: session.accessToken,
+    refreshToken: session.refreshToken,
+    sessionId: session.sessionId,
+    user: userProfile,
+  });
+});
+
+// 4. Fallback / Test endpoint to generate 6-digit Telegram code without live webhook
+authRouter.post('/telegram/code/mock-request', authRateLimiter(30), async (req, res) => {
+  const { id, username, first_name } = req.body;
+  const tgId = id || '12345678';
+  const tgUser = username || 'test_user';
+  const displayName = first_name || 'Test User';
+  const avatarUrl = `https://api.dicebear.com/7.x/bottts/svg?seed=tg_${tgId}`;
+
+  const userId = await upsertOAuthUser('telegram', String(tgId), tgUser, displayName, avatarUrl);
+  const code = Math.floor(100000 + Math.random() * 900000).toString();
+  const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+  const now = new Date().toISOString();
+
+  await db.run(`
+    INSERT INTO telegram_login_codes (code, user_id, telegram_id, username, display_name, avatar_url, expires_at, used, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)
+  `, code, userId, String(tgId), tgUser, displayName, avatarUrl, expiresAt, now);
+
+  res.json({ success: true, code, user: { id: userId, username: tgUser, displayName, avatarUrl } });
+});
+
+// 5. Fallback / Test endpoint to confirm Telegram login without live webhook
 authRouter.post('/telegram/bot/mock-confirm', authRateLimiter(20), async (req, res) => {
   const { token, id, username, first_name } = req.body;
   if (!token) {
@@ -1638,7 +1878,7 @@ authRouter.post('/telegram/bot/mock-confirm', authRateLimiter(20), async (req, r
   res.json({ success: true, code: authCode, user: userProfile });
 });
 
-// 4. Poll fallback for client if WebSocket drops
+// 6. Poll fallback for client if WebSocket drops
 authRouter.get('/telegram/bot/check', async (req, res) => {
   const token = req.query.token as string;
   if (!token) {
