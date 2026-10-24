@@ -166,6 +166,39 @@ export const api = {
     return res.json() as Promise<{ status: 'pending' | 'completed' | 'expired'; code: string | null; user: any | null }>;
   },
 
+  async createNativeAuthSession(
+    provider: 'google' | 'github' | 'telegram',
+    codeChallenge: string,
+    codeChallengeMethod: string = 'S256',
+    redirectUri: string = 'pulsechat://auth/callback',
+    state?: string
+  ) {
+    const res = await fetch(`${API_BASE}/auth/native/session`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        provider,
+        codeChallenge,
+        codeChallengeMethod,
+        redirectUri,
+        state,
+      }),
+    });
+    if (!res.ok) throw new Error('Не удалось создать сессию нативной авторизации');
+    return res.json() as Promise<{ nativeSessionId: string; authUrl: string; expiresInSeconds: number }>;
+  },
+
+  async checkNativeAuthSession(sessionId: string) {
+    const res = await fetch(`${API_BASE}/auth/native/session/${encodeURIComponent(sessionId)}`);
+    if (!res.ok) throw new Error('Не удалось проверить статус нативной сессии');
+    return res.json() as Promise<{
+      status: 'pending' | 'completed' | 'expired';
+      code: string | null;
+      state: string | null;
+      user: any | null;
+    }>;
+  },
+
   async getAuthProviders(): Promise<{ telegramBotName: string; googleClientId: string; githubClientId: string }> {
     const res = await fetch(`${API_BASE}/auth/providers`);
     if (!res.ok) return { telegramBotName: '', googleClientId: '', githubClientId: '' };

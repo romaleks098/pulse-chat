@@ -1,7 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import crypto from 'crypto';
 import { db } from '../db.js';
-import { notifyTelegramAuthSuccess } from '../socket.js';
+import { notifyTelegramAuthSuccess, notifyNativeAuthSuccess } from '../socket.js';
 import {
   hashPassword,
   verifyPassword,
@@ -569,6 +569,82 @@ async function upsertOAuthUser(provider: string, providerId: string, usernameBas
   return user.id;
 }
 
+// ============================================================================
+// NATIVE APP DEVICE AUTH SESSIONS (Android .apk and Windows Desktop .exe)
+// ============================================================================
+interface NativeAuthSession {
+  id: string;
+  createdAt: number;
+  expiresAt: number;
+  status: 'pending' | 'completed' | 'expired';
+  provider: string;
+  codeChallenge: string;
+  codeChallengeMethod: string;
+  redirectUri: string;
+  state?: string;
+  authCode?: string;
+  user?: any;
+}
+
+const nativeAuthSessions = new Map<string, NativeAuthSession>();
+
+// Cleanup expired native sessions every minute
+setInterval(() => {
+  const now = Date.now();
+  for (const [id, sess] of nativeAuthSessions.entries()) {
+    if (sess.expiresAt < now) {
+      nativeAuthSessions.delete(id);
+    }
+  }
+}, 60 * 1000);
+
+authRouter.post('/native/session', authRateLimiter(30), async (req, res) => {
+  const { provider, code_challenge, code_challenge_method, redirect_uri, state } = req.body;
+  if (!provider) {
+    return res.status(400).json({ error: 'Provider is required' });
+  }
+
+  const nativeSessionId = 'nat_' + crypto.randomUUID().replace(/-/g, '');
+  const expiresAt = Date.now() + 10 * 60 * 1000; // 10 minutes TTL
+
+  nativeAuthSessions.set(nativeSessionId, {
+    id: nativeSessionId,
+    createdAt: Date.now(),
+    expiresAt,
+    status: 'pending',
+    provider,
+    codeChallenge: code_challenge || '',
+    codeChallengeMethod: code_challenge_method || 'S256',
+    redirectUri: redirect_uri || 'pulsechat://auth/callback',
+    state: state || '',
+  });
+
+  const { publicUrl } = getOAuthEnv();
+  const baseUrl = publicUrl || (process.env.NODE_ENV === 'production' ? 'https://pulse-chat-qel7.onrender.com' : 'http://localhost:3001');
+  const authUrl = `${baseUrl}/api/auth/${provider}?native_session=${nativeSessionId}&code_challenge=${encodeURIComponent(code_challenge || '')}&code_challenge_method=${encodeURIComponent(code_challenge_method || 'S256')}&redirect_uri=${encodeURIComponent(redirect_uri || 'pulsechat://auth/callback')}&state=${encodeURIComponent(state || nativeSessionId)}`;
+
+  res.json({
+    nativeSessionId,
+    authUrl,
+    expiresInSeconds: 600,
+  });
+});
+
+authRouter.get('/native/session/:id', async (req, res) => {
+  const { id } = req.params;
+  const session = nativeAuthSessions.get(id);
+  if (!session || session.expiresAt < Date.now()) {
+    return res.status(404).json({ error: 'Сессия устарела или не найдена', status: 'expired' });
+  }
+
+  res.json({
+    status: session.status,
+    code: session.authCode || null,
+    state: session.state || null,
+    user: session.user || null,
+  });
+});
+
 // Helper to redirect OAuth callback securely without tokens in URL:
 // If PKCE was initiated, creates one-time auth code and redirects to ${redirect_uri}?code=${code}&state=${state}
 // If direct browser without PKCE, sets httpOnly cookie and redirects cleanly to /?auth=success
@@ -581,6 +657,68 @@ async function completeOAuthRedirect(
   codeChallengeMethod?: string,
   redirectUri?: string
 ) {
+  // Check if this was a native app device auth session
+  const nativeSessionId = (req.query.native_session as string) || (state && state.startsWith('nat_') ? state : undefined);
+  if (nativeSessionId && nativeAuthSessions.has(nativeSessionId)) {
+    const natSess = nativeAuthSessions.get(nativeSessionId)!;
+    const authCode = await createAuthCode(
+      userId,
+      natSess.codeChallenge,
+      natSess.codeChallengeMethod || 'S256',
+      natSess.redirectUri
+    );
+    const user = await db.get<any>('SELECT id, username, display_name, avatar_url FROM users WHERE id = ?', userId);
+    const userProfile = {
+      id: user?.id || userId,
+      username: user?.username || 'user',
+      displayName: user?.display_name || user?.username || 'User',
+      avatarUrl: user?.avatar_url || '',
+    };
+    natSess.status = 'completed';
+    natSess.authCode = authCode;
+    natSess.user = userProfile;
+
+    notifyNativeAuthSuccess(nativeSessionId, {
+      code: authCode,
+      state: natSess.state,
+      user: userProfile,
+    });
+
+    const deepLink = `pulsechat://auth/callback?code=${encodeURIComponent(authCode)}&state=${encodeURIComponent(natSess.state || '')}`;
+
+    return res.send(`
+      <!DOCTYPE html>
+      <html lang="ru">
+      <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Вход выполнен · PulseChat</title>
+        <style>
+          body { margin: 0; background: #090d16; color: #f8fafc; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 20px; box-sizing: border-box; }
+          .card { width: 100%; max-width: 420px; padding: 36px 28px; background: #141d33; border: 1px solid rgba(255,255,255,0.1); border-radius: 28px; text-align: center; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.5); }
+          .icon { width: 64px; height: 64px; margin: 0 auto 20px; background: rgba(16, 185, 129, 0.15); border: 1px solid rgba(16, 185, 129, 0.3); border-radius: 20px; display: flex; align-items: center; justify-content: center; font-size: 32px; color: #10b981; }
+          h2 { margin: 0 0 8px; font-size: 20px; font-weight: 700; color: #fff; }
+          p { margin: 0 0 24px; font-size: 13px; color: #94a3b8; line-height: 1.5; }
+          .btn { display: inline-flex; align-items: center; justify-content: center; width: 100%; padding: 14px 20px; background: #6366f1; color: #fff; text-decoration: none; border-radius: 14px; font-weight: 600; font-size: 14px; box-shadow: 0 10px 15px -3px rgba(99, 102, 241, 0.4); box-sizing: border-box; }
+        </style>
+        <script>
+          setTimeout(() => {
+            window.location.href = "${deepLink}";
+          }, 250);
+        </script>
+      </head>
+      <body>
+        <div class="card">
+          <div class="icon">✓</div>
+          <h2>Вход выполнен!</h2>
+          <p>Авторизация прошла успешно. Возвращаемся в приложение PulseChat...</p>
+          <a href="${deepLink}" class="btn">Открыть приложение PulseChat</a>
+        </div>
+      </body>
+      </html>
+    `);
+  }
+
   const targetRedirectUri = redirectUri && isAllowedRedirectUri(redirectUri) ? redirectUri : '';
 
   if (targetRedirectUri && codeChallenge) {
@@ -589,6 +727,42 @@ async function completeOAuthRedirect(
     const redirectUrl = new URL(targetRedirectUri);
     redirectUrl.searchParams.set('code', code);
     if (state) redirectUrl.searchParams.set('state', state);
+
+    if (targetRedirectUri.startsWith('pulsechat://') || targetRedirectUri.startsWith('app://')) {
+      const deepLink = redirectUrl.toString();
+      return res.send(`
+        <!DOCTYPE html>
+        <html lang="ru">
+        <head>
+          <meta charset="UTF-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1.0">
+          <title>Вход выполнен · PulseChat</title>
+          <style>
+            body { margin: 0; background: #090d16; color: #f8fafc; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 20px; box-sizing: border-box; }
+            .card { width: 100%; max-width: 420px; padding: 36px 28px; background: #141d33; border: 1px solid rgba(255,255,255,0.1); border-radius: 28px; text-align: center; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.5); }
+            .icon { width: 64px; height: 64px; margin: 0 auto 20px; background: rgba(16, 185, 129, 0.15); border: 1px solid rgba(16, 185, 129, 0.3); border-radius: 20px; display: flex; align-items: center; justify-content: center; font-size: 32px; color: #10b981; }
+            h2 { margin: 0 0 8px; font-size: 20px; font-weight: 700; color: #fff; }
+            p { margin: 0 0 24px; font-size: 13px; color: #94a3b8; line-height: 1.5; }
+            .btn { display: inline-flex; align-items: center; justify-content: center; width: 100%; padding: 14px 20px; background: #6366f1; color: #fff; text-decoration: none; border-radius: 14px; font-weight: 600; font-size: 14px; box-shadow: 0 10px 15px -3px rgba(99, 102, 241, 0.4); box-sizing: border-box; }
+          </style>
+          <script>
+            setTimeout(() => {
+              window.location.href = "${deepLink}";
+            }, 250);
+          </script>
+        </head>
+        <body>
+          <div class="card">
+            <div class="icon">✓</div>
+            <h2>Вход выполнен!</h2>
+            <p>Авторизация прошла успешно. Возвращаемся в приложение PulseChat...</p>
+            <a href="${deepLink}" class="btn">Открыть приложение PulseChat</a>
+          </div>
+        </body>
+        </html>
+      `);
+    }
+
     return res.redirect(redirectUrl.toString());
   }
 

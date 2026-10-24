@@ -54,6 +54,14 @@ export function notifyTelegramAuthSuccess(loginSessionToken: string, payload: an
   ioInstance.to(`tg_auth:${loginSessionToken}`).emit('telegram_auth_success', payload);
 }
 
+/**
+ * Broadcast an authentication success event to the Native App Device auth room
+ */
+export function notifyNativeAuthSuccess(sessionId: string, payload: any) {
+  if (!ioInstance) return;
+  ioInstance.to(`native_auth:${sessionId}`).emit('native_auth_success', payload);
+}
+
 export function setupSocketServer(io: Server) {
   ioInstance = io;
 
@@ -79,10 +87,15 @@ export function setupSocketServer(io: Server) {
 
   io.on('connection', async (socket: AuthenticatedSocket) => {
     if (!socket.user) {
-      // Anonymous socket for Telegram bot auth listener
+      // Anonymous socket for Telegram bot auth listener & native app auth listener
       socket.on('telegram_auth_listen', (loginToken: string) => {
         if (typeof loginToken === 'string' && loginToken.length > 5) {
           socket.join(`tg_auth:${loginToken}`);
+        }
+      });
+      socket.on('native_auth_listen', (sessionId: string) => {
+        if (typeof sessionId === 'string' && sessionId.length > 5) {
+          socket.join(`native_auth:${sessionId}`);
         }
       });
       return;

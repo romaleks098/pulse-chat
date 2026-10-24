@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { useChat } from '../context/ChatContext';
 import { useTheme } from '../context/ThemeContext';
 import { formatChatListTime } from '../utils/format';
@@ -93,6 +93,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
   // Resizing logic for desktop
   const isResizingRef = useRef(false);
+  const [isDesktop, setIsDesktop] = useState(() => (typeof window !== 'undefined' ? window.innerWidth >= 768 : true));
+
+  useEffect(() => {
+    const handleResize = () => setIsDesktop(window.innerWidth >= 768);
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
 
   const handleMouseDownResize = (e: React.MouseEvent) => {
     e.preventDefault();
@@ -282,8 +289,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
   return (
     <aside
-      style={{ width: `${settings.sidebarWidth}px` }}
-      className="relative h-full flex flex-col bg-[var(--bg-sidebar,#0e131f)] border-r border-[var(--border-subtle,rgba(255,255,255,0.08))] shrink-0 select-none transition-colors duration-150"
+      style={isDesktop ? { width: `${settings.sidebarWidth}px` } : undefined}
+      className="relative h-full w-full md:w-auto flex flex-col bg-[var(--bg-sidebar,#0e131f)] border-r border-[var(--border-subtle,rgba(255,255,255,0.08))] shrink-0 select-none transition-colors duration-150"
     >
       {/* Network connection banner */}
       {connectionStatus !== 'connected' && (

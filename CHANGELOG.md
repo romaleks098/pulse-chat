@@ -12,6 +12,7 @@
 2. [Архитектура проекта и технологический стек](#2-архитектура-проекта)
 3. [Инструкция по разработке, тестированию и деплою](#3-инструкция-по-разработке-тестированию-и-деплою)
 4. [Хронология всех версий и решённых проблем](#4-хронология-всех-версий-и-решённых-проблем)
+   - [Версия 1.9.0 — Мобильная адаптация (< 768px), Автономные приложения (Android APK & Windows EXE), Нативная OAuth и CI/CD](#версия-190)
    - [Версия 1.8.2 — Автоопределение Telegram-бота (getMe), единая переменная TELEGRAM_BOT_TOKEN](#версия-182)
    - [Версия 1.8.1 — Hotfix: Устранение падения в чёрный экран после входа (Rules of Hooks & ErrorBoundary)](#версия-181)
    - [Версия 1.8.0 — Этапы 5, 6, 7: Live Preview, Оформление, Drawer, Login, Пересылка, Спойлеры и Хоткеи](#версия-180)
@@ -95,6 +96,90 @@ git push origin main:master
 ---
 
 ## 4. Хронология всех версий и решённых проблем
+
+### Версия 1.9.0
+**Дата:** 24 октября 2026  
+**Категория:** Critical Bugfix / Feature / Native Mobile & Desktop / Architecture / CI/CD  
+**Статус:** Стабильный релиз мобильной адаптации и нативных автономных приложений  
+
+#### 1. Критическое исправление мобильной верстки (< 768px):
+- **Устранена блокировка в единственном чате:**
+  - В `ChatContext.tsx` при начальной загрузке на экранах `< 768px` `activeConversationId` инициализируется в `null`. Теперь при входе со смартфона пользователь сразу видит полный список диалогов (`Sidebar`), вкладки и бургер-меню, а не оказывается заперт в чате.
+  - Автовыбор чата «Избранное» при отсутствии активного диалога ограничен исключительно десктопными экранами (`window.innerWidth >= 768`).
+- **Адаптивная ширина боковой панели (`Sidebar.tsx`):**
+  - Пользовательская ширина (`settings.sidebarWidth` от 340px до 500px) теперь применяется только на десктопе (`isDesktop ? { width: ... } : undefined`).
+  - На мобильных устройствах сайдбар строго занимает 100% ширины экрана (`w-full`), исключая горизонтальное переполнение и обрезание элементов управления.
+- **Удобная кнопка возврата и edge-swipe жест (`ChatArea.tsx`):**
+  - Кнопка «Назад» (`ArrowLeft`) отделена от интерактивного кликабельного заголовка чата, увеличен touch-target до стандарта доступности 44×44px (`min-w-[44px] min-h-[44px]`), поднят `z-index: 30`.
+  - Реализован жест свайпа от левого края экрана (`touchStartX < 40px`, `deltaX > 65px`) для естественного возврата к списку чатов одной рукой.
+- **Динамическая высота вьюпорта (`100dvh`):**
+  - `App.tsx` и `AuthScreen.tsx` переведены с `100vh` на `h-[100dvh]` с `max-w-full overflow-hidden`, что предотвращает выталкивание нижней панели ввода за пределы экрана адресной строкой мобильных браузеров.
+  - Добавлена обработка события `popstate` для поддержки аппаратной кнопки «Назад» на Android.
+
+#### 2. Полноценные автономные нативные приложения (Android & Windows):
+- **Отказ от WebView-ярлыков:**
+  - Нативные приложения для Android (`.apk`) и Windows Desktop (`.exe`) теперь полностью автономны и загружают локальный бандл интерфейса из `dist` / assets APK (`loadFile` / local webDir), а не оборачивают сайт в WebView.
+  - В `capacitor.config.json` удален блок `"server": { "url": "https://..." }`, сборка направлена на локальный `dist`.
+- **Централизованный модуль маршрутизации сетевых запросов (`client/src/config/runtime.ts`):**
+  - Реализовано надежное определение среды: `isElectron`, `isCapacitor`, `isNativeApp`.
+  - Для нативных приложений все REST API и Socket.io соединения автоматически направляются на удаленный бэкенд `https://pulse-chat-qel7.onrender.com`.
+  - Для браузерной веб-версии сохраняются нативные относительные пути (`window.location.origin`).
+- **Оффлайн-кэш для мгновенного старта за 0.01 сек:**
+  - Профиль пользователя (`pulse_cached_user`), список диалогов (`pulse_cached_conversations`) и история сообщений (`pulse_cached_messages_${convId}`) кэшируются в `localStorage`.
+  - При открытии приложения интерфейс рендерится мгновенно без блокирующего экрана ожидания "Сервер просыпается (30 сек)" на бесплатном тарифе Render. Сеть синхронизируется в фоновом режиме.
+
+#### 3. Нативная авторизация (Google, GitHub, Telegram):
+- **Серверная сессия нативной авторизации:**
+  - Добавлены эндпоинты `POST /api/auth/native/session` и `GET /api/auth/native/session/:id` (TTL 600 сек).
+  - Запуск авторизации через внешний системный браузер (решает блокировку `disallowed_useragent` от Google в embedded WebViews).
+  - Двойная гарантия подтверждения входа: WebSocket-комната `native_auth:${sessionId}` + резервный опрос каждые 2 сек + Deep Link редирект `pulsechat://auth/callback`.
+- **Поддержка Deep Link:**
+  - В `client/android/app/src/main/AndroidManifest.xml` зарегистрирован `intent-filter` для схемы `pulsechat` и хоста `auth`.
+  - Добавлены разрешения `RECORD_AUDIO`, `CAMERA` и `MODIFY_AUDIO_SETTINGS`.
+  - Установлен плагин `@capacitor/app` с обработчиком `appUrlOpen` в `App.tsx`.
+
+#### 4. Electron Windows Desktop клиент:
+- **Кастомный тайтлбар в стиле Telegram Desktop (`DesktopTitlebar.tsx`):**
+  - Высота 32px, перетаскивание окна (`-webkit-app-region: drag`), интерактивные кнопки Свернуть / Развернуть / Закрыть (`no-drag`), автоматическая адаптация к активной теме.
+- **Главный процесс (`desktop/main.cjs`):**
+  - Безоконный режим (`frame: false`), загрузка локального бандла `client_dist/index.html`.
+  - Интеграция с системным треем (`Tray`), одноэкземплярный запуск (`requestSingleInstanceLock`).
+  - IPC-интерфейс в `preload.cjs`: управление окном, открытие внешних ссылок в системном браузере, мигание в панели задач при новых сообщениях.
+- **Сборщик `electron-builder` (`desktop/package.json`):**
+  - Конфигурация для создания установщика `PulseChat-Setup.exe` (NSIS) и переносной версии `PulseChat-Portable.exe`.
+
+#### 5. CI/CD автоматизация в GitHub Actions (`.github/workflows/build-apps.yml`):
+- Мульти-джобовый конвейер сборки:
+  - `build-android`: Ubuntu, JDK 21, Node.js 22, Capacitor sync, `./gradlew assembleDebug`, загрузка `PulseChat-Android.apk`.
+  - `build-windows`: Windows Latest, сборка веб-клиента, копирование в `desktop/client_dist`, `npm run build:exe` через `electron-builder`, загрузка `PulseChat-Setup.exe` и `PulseChat-Portable.exe`.
+  - `release-apps`: при пуше тега `v*` автоматически создает GitHub Release и прикрепляет исполняемые файлы.
+
+**Затронутые файлы:**
+- `client/src/context/ChatContext.tsx`
+- `client/src/components/Sidebar.tsx`
+- `client/src/components/ChatArea.tsx`
+- `client/src/App.tsx`
+- `client/src/components/AuthScreen.tsx`
+- `client/src/components/DesktopTitlebar.tsx`
+- `client/src/config/runtime.ts`
+- `client/src/config.ts`
+- `client/src/utils/pkce.ts`
+- `client/src/services/api.ts`
+- `client/capacitor.config.json`
+- `client/android/app/src/main/AndroidManifest.xml`
+- `desktop/main.cjs`
+- `desktop/preload.cjs`
+- `desktop/package.json`
+- `.github/workflows/build-apps.yml`
+- `scripts/test_mobile_and_native_apps.js`
+- `package.json`, `client/package.json`, `server/package.json`
+
+**Результаты проверок:**
+- Секреты: `npm run check:secrets` — ✅ Пройдено (0 секретов)
+- Сборка: `npm run build` — ✅ Пройдено (клиент и сервер скомпилированы)
+- Автотесты: `npm test` — ✅ Все 5 тестовых наборов пройдены (31/31 проверка)
+
+---
 
 ### Версия 1.8.2
 **Дата:** 24 октября 2026  

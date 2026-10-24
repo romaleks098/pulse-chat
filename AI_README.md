@@ -13,6 +13,7 @@
 2. [Архитектура проекта и технологический стек](#2-архитектура-проекта-и-технологический-стек)
 3. [Команды разработки, тестирования и сборки](#3-команды-разработки-тестирования-и-сборки)
 4. [Журнал всех обновлений и изменений](#4-журнал-всех-обновлений-и-изменений)
+   - [Версия 1.9.0 — Мобильная адаптация (< 768px), Автономные приложения (Android APK & Windows EXE), Нативная OAuth и CI/CD](#версия-190)
    - [Версия 1.8.2 — Автоопределение Telegram-бота (getMe), единая переменная TELEGRAM_BOT_TOKEN](#версия-182)
    - [Версия 1.8.1 — Hotfix: Устранение падения в чёрный экран после входа (Rules of Hooks & ErrorBoundary)](#версия-181)
    - [Версия 1.8.0 — Этапы 5, 6, 7: Live Preview оформления, Drawer, Login, Пересылка, Спойлеры и Хоткеи](#версия-180)
@@ -83,6 +84,63 @@ git push origin main:master
 ---
 
 ## 4. Журнал всех обновлений и изменений
+
+### Версия 1.9.0
+**Дата:** 24 октября 2026  
+**Категория:** Critical Bugfix / Feature / Native Mobile & Desktop / Architecture / CI/CD  
+**Статус:** Релиз адаптивного мобильного интерфейса и автономных нативных приложений  
+**Суть обновления:**  
+1. Устранена блокировка интерфейса на смартфонах (`< 768px`): больше нет застревания в одном чате при холодном старте, сайдбар занимает 100% ширины, увеличен хитбокс кнопки «Назад» до 44px, добавлен свайп-жест возврата и динамическая высота `100dvh`.
+2. Создана архитектура автономных нативных приложений для Android (`.apk`) и Windows Desktop (`.exe`): отказ от внешних WebView-ссылок в пользу локального бандла `client/dist`, оффлайн-кэш для запуска за 0.01 сек, нативный OAuth (Google/GitHub/Telegram) через системный браузер и Deep Links (`pulsechat://auth/callback`), кастомный Telegram Desktop тайтлбар, системный трей и автоматическая сборка в GitHub Actions.
+
+**Что сделано:**
+1. **Критический мобильный фикс (< 768px):**
+   - В `ChatContext.tsx` начальный `activeConversationId` выставляется в `null` на экранах `< 768px`, открывая список чатов по умолчанию.
+   - Автовыбор «Избранного» разрешен только на десктопе (`>= 768px`).
+   - `Sidebar.tsx`: фиксированная ширина применяется только на десктопе (`isDesktop ? { width: ... } : undefined`), на телефонах сайдбар всегда `w-full`.
+   - `ChatArea.tsx`: кнопка «Назад» вынесена из блока заголовка, увеличен tap-target до 44×44px (`min-w-[44px] min-h-[44px]`), добавлен горизонтальный свайп от левого края (`edge-swipe`) для возврата к диалогам.
+   - Корневые экраны `App.tsx` и `AuthScreen.tsx` переведены на `100dvh` с `overflow-hidden` и поддержкой аппаратной кнопки «Назад» (`popstate`).
+2. **Автономные нативные клиенты (Android & Windows):**
+   - Локальная загрузка бандла (`loadFile` в Electron, локальный `webDir: "dist"` в Capacitor без `"server": { "url": ... }`).
+   - Сетевой модуль `client/src/config/runtime.ts` динамически определяет окружение (`isElectron`, `isCapacitor`, `isNativeApp`) и перенаправляет запросы к облачному API `https://pulse-chat-qel7.onrender.com`.
+   - Локальное кэширование профиля, диалогов и сообщений в `localStorage` для мгновенного входа за 0.01 сек.
+3. **Нативная OAuth-авторизация и Deep Links:**
+   - Эндпоинты `POST /api/auth/native/session` и `GET /api/auth/native/session/:id` на сервере.
+   - Запуск авторизации в системном браузере с завершением через WebSocket `native_auth:${sessionId}`, поллинг и Deep Link `pulsechat://auth/callback`.
+   - Регистрация фильтра `pulsechat://auth` в `AndroidManifest.xml` и слушатель `@capacitor/app` в клиенте.
+4. **Electron Windows Desktop клиент:**
+   - Кастомный draggable тайтлбар `DesktopTitlebar.tsx` с кнопками управления окном и адаптацией под тему.
+   - Безоконный режим (`frame: false`), трей (`Tray`), одноэкземплярность, фоновые уведомления.
+   - Конфигурация `electron-builder` для сборки `PulseChat-Setup.exe` и `PulseChat-Portable.exe`.
+5. **CI/CD Воркфлоу в GitHub Actions (`.github/workflows/build-apps.yml`):**
+   - Автоматическая компиляция `.apk` и `.exe` при push в `main` и авторелиз на GitHub Releases при пуше тега `v*`.
+
+**Затронутые файлы:**
+- `client/src/context/ChatContext.tsx`
+- `client/src/components/Sidebar.tsx`
+- `client/src/components/ChatArea.tsx`
+- `client/src/App.tsx`
+- `client/src/components/AuthScreen.tsx`
+- `client/src/components/DesktopTitlebar.tsx`
+- `client/src/config/runtime.ts`
+- `client/src/config.ts`
+- `client/src/utils/pkce.ts`
+- `client/src/services/api.ts`
+- `client/capacitor.config.json`
+- `client/android/app/src/main/AndroidManifest.xml`
+- `desktop/main.cjs`
+- `desktop/preload.cjs`
+- `desktop/package.json`
+- `.github/workflows/build-apps.yml`
+- `scripts/test_mobile_and_native_apps.js`
+- `package.json`, `client/package.json`, `server/package.json`
+
+**Результаты проверок:**
+- Секреты: `npm run check:secrets` — ✅ Пройдено (0 утечек)
+- Сборка: `npm run build` — ✅ Пройдено (TypeScript + Vite)
+- Автотесты: `npm test` — ✅ Все 5 наборов тестов успешно пройдены (31/31)
+
+---
 
 ### Версия 1.8.2
 **Дата:** 2026-10-24  

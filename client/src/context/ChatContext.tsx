@@ -61,10 +61,28 @@ interface ChatContextType {
 const ChatContext = createContext<ChatContextType | undefined>(undefined);
 
 export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [currentUser, setCurrentUser] = useState<User | null>(() => {
+    try {
+      const cached = localStorage.getItem('pulse_cached_user');
+      return cached ? JSON.parse(cached) : null;
+    } catch {
+      return null;
+    }
+  });
   const [token, setToken] = useState<string | null>(localStorage.getItem('token'));
-  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [conversations, setConversations] = useState<Conversation[]>(() => {
+    try {
+      const cached = localStorage.getItem('pulse_cached_conversations');
+      return cached ? JSON.parse(cached) : [];
+    } catch {
+      return [];
+    }
+  });
   const [activeConversationId, setActiveConversationId] = useState<string | null>(() => {
+    // On mobile screens (< 768px), always start with the chat list (Sidebar) open!
+    if (typeof window !== 'undefined' && window.innerWidth < 768) {
+      return null;
+    }
     return localStorage.getItem('pulse_active_conv_id');
   });
   const [messages, setMessages] = useState<Message[]>([]);
@@ -73,7 +91,12 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [typingMap, setTypingMap] = useState<Record<string, Record<string, string>>>({}); // convId -> { userId: name }
   const [loadingMessages, setLoadingMessages] = useState<boolean>(false);
   const [connectionStatus, setConnectionStatus] = useState<'connected' | 'connecting' | 'disconnected'>('connecting');
-  const [isAuthInitializing, setIsAuthInitializing] = useState<boolean>(Boolean(token));
+  const [isAuthInitializing, setIsAuthInitializing] = useState<boolean>(() => {
+    const hasToken = Boolean(localStorage.getItem('token'));
+    const hasCachedUser = Boolean(localStorage.getItem('pulse_cached_user'));
+    // If we already have token and cached user, start immediately without blocking splash
+    return hasToken && !hasCachedUser;
+  });
 
   const activeConversationIdRef = useRef<string | null>(activeConversationId);
   useEffect(() => {
@@ -335,6 +358,21 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   }, []);
 
+  // Listen for native OAuth completion (pulse:auth-success event from Electron / Capacitor)
+  useEffect(() => {
+    const handleAuthSuccess = (e: Event) => {
+      const customEvent = e as CustomEvent;
+      const res = customEvent.detail;
+      if (res?.token && res?.user) {
+        setToken(res.token);
+        setCurrentUser(res.user);
+        socketService.connect(res.token);
+      }
+    };
+    window.addEventListener('pulse:auth-success', handleAuthSuccess);
+    return () => window.removeEventListener('pulse:auth-success', handleAuthSuccess);
+  }, []);
+
   // Initialize Auth with cold-start retry
   useEffect(() => {
     if (!token) {
@@ -498,12 +536,21 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   }, [currentUser]);
 
-  // Load messages when active conversation changes or auth completes
+  // Load messages when active conversation changes or auth completes (with instant offline cache)
   useEffect(() => {
     if (!activeConversationId) {
       setMessages([]);
       return;
     }
+
+    // Instantly hydrate from local cache if available!
+    try {
+      const cached = localStorage.getItem(`pulse_cached_messages_${activeConversationId}`);
+      if (cached) {
+        setMessages(JSON.parse(cached));
+      }
+    } catch {}
+
     if (!token || !currentUser) {
       return;
     }
@@ -514,6 +561,9 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
     api.getMessages(activeConversationId)
       .then((msgs) => {
         setMessages(msgs);
+        try {
+          localStorage.setItem(`pulse_cached_messages_${activeConversationId}`, JSON.stringify(msgs.slice(-50)));
+        } catch {}
       })
       .catch((err) => {
         console.error('Failed to load messages:', err);
@@ -523,14 +573,36 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
       });
   }, [activeConversationId, currentUser, token]);
 
+  // Persist user and conversations to offline cache for 0.01s instant startup
+  useEffect(() => {
+    if (currentUser) {
+      try {
+        localStorage.setItem('pulse_cached_user', JSON.stringify(currentUser));
+      } catch {}
+    }
+  }, [currentUser]);
+
+  useEffect(() => {
+    if (conversations.length > 0) {
+      try {
+        localStorage.setItem('pulse_cached_conversations', JSON.stringify(conversations));
+      } catch {}
+    }
+  }, [conversations]);
+
   // If conversations loaded and stored activeConversationId is not among them, adjust selection
   useEffect(() => {
     if (conversations.length > 0 && activeConversationId) {
       const exists = conversations.some((c) => c.id === activeConversationId);
       if (!exists) {
-        const saved = conversations.find((c) => c.isSaved);
-        if (saved) {
-          selectConversation(saved.id);
+        // Only auto-select on desktop; on mobile stay in chat list
+        if (typeof window !== 'undefined' && window.innerWidth >= 768) {
+          const saved = conversations.find((c) => c.isSaved);
+          if (saved) {
+            selectConversation(saved.id);
+          } else {
+            selectConversation(null);
+          }
         } else {
           selectConversation(null);
         }
@@ -585,6 +657,8 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
     localStorage.removeItem('pulse_active_conv_id');
     localStorage.removeItem('pulse_last_seq');
     localStorage.removeItem('pulse_server_epoch');
+    localStorage.removeItem('pulse_cached_user');
+    localStorage.removeItem('pulse_cached_conversations');
     lastSeqRef.current = 0;
     serverEpochRef.current = '';
     setToken(null);

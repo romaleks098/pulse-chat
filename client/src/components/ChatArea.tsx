@@ -105,6 +105,36 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const msgLongPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Swipe from left edge to return to chat list on mobile
+  const touchStartXRef = useRef<number | null>(null);
+  const touchStartYRef = useRef<number | null>(null);
+
+  const handleTouchStartEdge = (e: React.TouchEvent) => {
+    if (typeof window !== 'undefined' && window.innerWidth >= 768) return;
+    const touch = e.touches[0];
+    if (touch && touch.clientX < 40) {
+      touchStartXRef.current = touch.clientX;
+      touchStartYRef.current = touch.clientY;
+    } else {
+      touchStartXRef.current = null;
+      touchStartYRef.current = null;
+    }
+  };
+
+  const handleTouchEndEdge = (e: React.TouchEvent) => {
+    if (touchStartXRef.current === null || touchStartYRef.current === null) return;
+    const touch = e.changedTouches[0];
+    if (touch) {
+      const deltaX = touch.clientX - touchStartXRef.current;
+      const deltaY = Math.abs(touch.clientY - touchStartYRef.current);
+      if (deltaX > 65 && deltaY < 55) {
+        onBack();
+      }
+    }
+    touchStartXRef.current = null;
+    touchStartYRef.current = null;
+  };
+
   // Auto-resize textarea height (up to 6 lines ~168px)
   useEffect(() => {
     if (textareaRef.current) {
@@ -452,24 +482,31 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
 
   return (
     <div className="flex-1 h-full flex overflow-hidden relative">
-      <main className="flex-1 h-full flex flex-col bg-[var(--bg-chat,#090d16)] overflow-hidden relative">
+      <main
+        onTouchStart={handleTouchStartEdge}
+        onTouchEnd={handleTouchEndEdge}
+        className="flex-1 h-full flex flex-col bg-[var(--bg-chat,#090d16)] overflow-hidden relative"
+      >
         {/* Top Chat Header */}
-        <header className="h-14 px-3.5 bg-[var(--bg-chat,#090d16)]/90 border-b border-[var(--border-subtle,rgba(255,255,255,0.08))] flex items-center justify-between gap-3 shrink-0 backdrop-blur-md z-10">
+        <header className="h-14 px-2 sm:px-3.5 bg-[var(--bg-chat,#090d16)]/90 border-b border-[var(--border-subtle,rgba(255,255,255,0.08))] flex items-center justify-between gap-1.5 sm:gap-3 shrink-0 backdrop-blur-md z-20">
+          {/* Prominent, easily tappable Back button on mobile (< 768px) */}
+          <button
+            type="button"
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              onBack();
+            }}
+            aria-label="Назад к списку чатов"
+            className="md:hidden flex items-center justify-center min-w-[44px] min-h-[44px] text-[var(--text-secondary,#94a3b8)] hover:text-white active:bg-white/15 rounded-xl transition-all cursor-pointer z-30 shrink-0"
+          >
+            <ArrowLeft className="w-6 h-6 stroke-[2.25]" />
+          </button>
+
           <div
             onClick={() => setShowInfoPanel((prev) => !prev)}
-            className="flex items-center gap-3 min-w-0 cursor-pointer hover:opacity-90 transition-opacity flex-1"
+            className="flex items-center gap-2.5 sm:gap-3 min-w-0 cursor-pointer hover:opacity-90 transition-opacity flex-1 py-1"
           >
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                onBack();
-              }}
-              aria-label="Назад к списку чатов"
-              className="md:hidden p-1.5 text-[var(--text-secondary,#94a3b8)] hover:text-white rounded-lg hover:bg-white/10 transition-colors"
-            >
-              <ArrowLeft className="w-5 h-5" />
-            </button>
-
             <Avatar
               src={activeConversation.avatarUrl}
               name={activeConversation.name}

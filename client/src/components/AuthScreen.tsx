@@ -69,21 +69,41 @@ export const AuthScreen: React.FC = () => {
     }
   };
 
-  const handleGoogleClick = () => {
+  const handleGoogleClick = async () => {
     setOauthLoading('google');
+    setError(null);
     try {
-      startOAuthPKCE('google');
-    } catch {
+      await startOAuthPKCE('google', {
+        onSuccess: () => {
+          setOauthLoading(null);
+        },
+        onError: (err) => {
+          setOauthLoading(null);
+          setError(err.message || 'Ошибка входа через Google');
+        },
+      });
+    } catch (err: any) {
       setOauthLoading(null);
+      setError(err.message || 'Ошибка запуска входа');
     }
   };
 
-  const handleGithubClick = () => {
+  const handleGithubClick = async () => {
     setOauthLoading('github');
+    setError(null);
     try {
-      startOAuthPKCE('github');
-    } catch {
+      await startOAuthPKCE('github', {
+        onSuccess: () => {
+          setOauthLoading(null);
+        },
+        onError: (err) => {
+          setOauthLoading(null);
+          setError(err.message || 'Ошибка входа через GitHub');
+        },
+      });
+    } catch (err: any) {
       setOauthLoading(null);
+      setError(err.message || 'Ошибка запуска входа');
     }
   };
 
@@ -100,7 +120,7 @@ export const AuthScreen: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen w-full bg-[var(--bg-app,#090d16)] text-[var(--text-primary,#f8fafc)] flex items-center justify-center p-4 relative overflow-hidden transition-colors duration-200">
+    <div className="min-h-[100dvh] w-full bg-[var(--bg-app,#090d16)] text-[var(--text-primary,#f8fafc)] flex items-center justify-center p-4 relative overflow-hidden transition-colors duration-200">
       {/* Background ambient gradient glow */}
       <div className="absolute top-1/4 left-1/2 -translate-x-1/2 w-96 h-96 bg-[var(--accent-default,#6366f1)]/10 rounded-full blur-3xl pointer-events-none" />
       <div className="absolute bottom-1/4 left-1/3 w-80 h-80 bg-[var(--accent-hover,#4f46e5)]/10 rounded-full blur-3xl pointer-events-none" />

@@ -1,7 +1,7 @@
 {
   "name": "client",
   "private": true,
-  "version": "1.8.2",
+  "version": "1.9.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -12,6 +12,7 @@
     "cap:android": "npx cap open android"
   },
   "dependencies": {
+    "@capacitor/app": "^8.1.2",
     "@capacitor/core": "^8.5.3",
     "clsx": "^2.1.1",
     "date-fns": "^4.4.0",
