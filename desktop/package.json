@@ -1,6 +1,6 @@
 {
   "name": "pulse-chat-desktop",
-  "version": "1.9.1",
+  "version": "1.9.2",
   "description": "PulseChat Desktop App for Windows",
   "author": "PulseChat",
   "main": "main.cjs",

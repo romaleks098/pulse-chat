@@ -46,12 +46,12 @@ export const TelegramBotModal: React.FC<TelegramBotModalProps> = ({
       // 1. Generate PKCE pair
       const verifier = generateCodeVerifier(64);
       verifierRef.current = verifier;
-      const challenge = await generateCodeChallenge(verifier);
+      const { challenge, method } = await generateCodeChallenge(verifier);
       const state = generateCodeVerifier(16);
 
       // 2. Request Telegram bot auth session
       const redirectUri = `${window.location.origin}/auth/callback`;
-      const session = await api.createTelegramBotSession(challenge, 'S256', redirectUri, state);
+      const session = await api.createTelegramBotSession(challenge, method, redirectUri, state);
       setBotSession(session);
       setStatusText('Ожидаем подтверждения в боте...');
 

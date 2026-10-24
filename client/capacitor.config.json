@@ -1,5 +1,12 @@
 {
   "appId": "com.pulsechat.app",
   "appName": "PulseChat",
-  "webDir": "dist"
+  "webDir": "dist",
+  "plugins": {
+    "StatusBar": {
+      "overlaysWebView": false,
+      "backgroundColor": "#090d16",
+      "style": "DARK"
+    }
+  }
 }

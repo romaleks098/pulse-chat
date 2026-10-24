@@ -13,6 +13,7 @@
 2. [Архитектура проекта и технологический стек](#2-архитектура-проекта-и-технологический-стек)
 3. [Команды разработки, тестирования и сборки](#3-команды-разработки-тестирования-и-сборки)
 4. [Журнал всех обновлений и изменений](#4-журнал-всех-обновлений-и-изменений)
+   - [Версия 1.9.2 — Защита от системного статус-бара Android, устранение ошибки PKCE при входе через Google, персистентность медиафайлов в PostgreSQL, скрытие GitHub](#версия-192)
    - [Версия 1.9.1 — Исправление запуска Windows .exe (относительные пути Vite), нативный OAuth без веб-редиректа, вход по 6-значному коду из Telegram](#версия-191)
    - [Версия 1.9.0 — Мобильная адаптация (< 768px), Автономные приложения (Android APK & Windows EXE), Нативная OAuth и CI/CD](#версия-190)
    - [Версия 1.8.2 — Автоопределение Telegram-бота (getMe), единая переменная TELEGRAM_BOT_TOKEN](#версия-182)
@@ -85,6 +86,71 @@ git push origin main:master
 ---
 
 ## 4. Журнал всех обновлений и изменений
+
+### Версия 1.9.2
+**Дата:** 24 октября 2026  
+**Категория:** Mobile UX / Safe Area / Security & PKCE OAuth / Media Storage Persistence / UI Cleanliness  
+**Статус:** Релиз v1.9.2: Устранение перекрытия статус-баром в Android, устранение ошибки PKCE при входе через Google в приложениях, сохранение медиафайлов в БД PostgreSQL/SQLite, скрытие кнопки GitHub  
+**Суть обновления:**  
+1. **Устранено наложение системного статус-бара Android на шапку приложения:**
+   - **Проблема:** В `.apk` на Android верхняя часть интерфейса (бургер-меню, аватарка, кнопка «Назад», название чата, статус) залезала прямо под системный статус-бар Android (часы, процент батареи, вырез/камеру), делая нажатия на кнопки практически невозможными.
+   - **Корневая причина:** Начиная с Android 15 (API 35), система принудительно включает режим Edge-to-Edge (`fitsSystemWindows: false`), а в WebView CSS-переменная `env(safe-area-inset-top)` часто возвращает `0px`.
+   - **Решение:**
+     - В `client/android/app/src/main/res/values/styles.xml` установлены флаги: `android:fitsSystemWindows = true`, `android:windowOptOutEdgeToEdgeEnforcement = true`, задан тёмный цвет фона статус-бара `android:statusBarColor = #090d16`.
+     - В `client/capacitor.config.json` настроен плагин `@capacitor/status-bar`: `overlaysWebView: false`, `backgroundColor: "#090d16"`, `style: "DARK"`.
+     - Установлен пакет `@capacitor/status-bar` в `client`.
+     - В `client/src/index.css` введены системные переменные `--safe-top: max(env(safe-area-inset-top, 0px), 0px)` и для класса `.capacitor-android`: `--safe-top: max(env(safe-area-inset-top, 0px), 28px)`.
+     - В `client/src/App.tsx` добавлен защитный распорочный блок `safe-top-spacer`, динамически подключающий класс платформы `capacitor-android` и управляющий `StatusBar.setOverlaysWebView({ overlay: false })`.
+2. **Временно скрыта кнопка входа через GitHub на экране авторизации:**
+   - В `client/src/components/AuthScreen.tsx` скрыта кнопка GitHub, социальные кнопки переведены в аккуратную двухколоночную сетку `grid-cols-2 gap-2.5` (Telegram + Google).
+   - Под ними акцентирована кнопка «Войти по 6-значному коду из Telegram».
+   - Верхний переключатель темы (`ThemeSwitch`) снабжён отступом `top-[calc(var(--safe-top)+1rem)]`.
+3. **Устранена ошибка «Недействительный PKCE code_verifier» при входе через Google в приложениях:**
+   - **Проблема:** При попытке войти через Google в Windows Desktop и Android APK на экране возникала ошибка `Недействительный PKCE code_verifier`.
+   - **Корневая причина:**
+     1. В `server/src/routes/auth.ts` эндпоинт `/api/auth/native/session` ожидал параметры в `snake_case` (`code_challenge`, `code_challenge_method`, `redirect_uri`), в то время как клиент передавал их в `camelCase` (`codeChallenge`, `codeChallengeMethod`, `redirectUri`). В БД сохранялась пустая строка в качестве `code_challenge`, из-за чего последующая валидация падала.
+     2. Состояние гонки (Race Condition): при успешном завершении OAuth в браузере сразу три канала (WebSocket `native_auth_listen`, фоновый опрос Polling и Deep Link `pulsechat://auth/callback`) одновременно вызывали `/api/auth/exchange`. Первый запрос успешно получал токен, а второй отправлял уже сгоревший код авторизации, приводя к ошибке PKCE.
+     3. Отсутствие безопасного фоллбэка `SubtleCrypto` в изолированных WebView окружениях.
+   - **Решение:**
+     - В `server/src/routes/auth.ts` добавлена поддержка обоих форматов именования полей (`camelCase` и `snake_case`).
+     - В `client/src/utils/pkce.ts` реализована функция `safeExchangeAuthCode` со встроенным кэшем/замком `inFlightExchanges`, гарантирующая дедупликацию одновременных запросов обмена кода.
+     - В `generateCodeChallenge` добавлен фоллбэк на метод `plain`, если криптографический API браузера недоступен.
+4. **Персистентность загружаемых изображений и медиафайлов:**
+   - **Проблема:** При перезапуске контейнера в Render (эфемерный диск) загруженные файлы из директории `/uploads` удалялись, приводя к ошибкам `404 Not Found` (битые аватарки и картинки). Кроме того, в нативных приложениях относительные ссылки `/uploads/...` не открывались.
+   - **Решение:**
+     - В `server/src/migrations/schema.ts` добавлена миграция `005_media_files_persistence`: создана таблица `media_files (filename TEXT PRIMARY KEY, mime_type TEXT NOT NULL, data BYTEA/BLOB NOT NULL, size INTEGER NOT NULL, created_at TIMESTAMPTZ)`.
+     - В `server/src/routes/upload.ts` при загрузке файлов буфер бинарных данных немедленно сохраняется в БД.
+     - В `server/src/index.ts` эндпоинты `/uploads/:filename` и `/api/uploads/:filename` проверяют наличие файла на диске, а при его отсутствии извлекают бинарные данные из таблицы `media_files`, восстанавливают локальный кэш на диске и отдают клиенту с заголовками `Cache-Control: public, max-age=31536000, immutable`.
+     - В `client/src/config/runtime.ts` реализована универсальная функция `resolveAssetUrl(url)`, гарантирующая преобразование путей `/uploads/...` в абсолютные URL удалённого бэкенда для нативных клиентов.
+     - Функция `resolveAssetUrl` интегрирована во все клиентские компоненты: `Avatar`, `ChatArea`, `ImageViewerModal`, `VoiceMessagePlayer`, `RightInfoPanel`.
+
+**Затронутые файлы:**
+- `client/android/app/src/main/res/values/styles.xml` — `fitsSystemWindows`, `windowOptOutEdgeToEdgeEnforcement`, цвет статус-бара.
+- `client/capacitor.config.json` — конфигурация плагина StatusBar.
+- `client/package.json` — установка `@capacitor/status-bar`.
+- `client/src/index.css` — `--safe-top` и класс `.capacitor-android`.
+- `client/src/App.tsx` — безопасный распорочный блок шапки, инициализация StatusBar.
+- `client/src/components/AuthScreen.tsx` — скрытие GitHub, 2 колонки, Telegram 6-значный код.
+- `server/src/routes/auth.ts` — поддержка camelCase/snake_case в `/native/session`.
+- `client/src/utils/pkce.ts` — `safeExchangeAuthCode` дедупликация, fallback для криптографии.
+- `server/src/migrations/schema.ts` — миграция 005 `media_files`.
+- `server/src/routes/upload.ts` — запись буфера в таблицу `media_files`.
+- `server/src/index.ts` — раздача медиафайлов с выгрузкой из БД при отсутствии на диске.
+- `client/src/config/runtime.ts` — функция `resolveAssetUrl`.
+- `client/src/components/ui/Avatar.tsx` — применение `resolveAssetUrl`.
+- `client/src/components/ChatArea.tsx` — применение `resolveAssetUrl`.
+- `client/src/components/ImageViewerModal.tsx` — применение `resolveAssetUrl`.
+- `client/src/components/VoiceMessagePlayer.tsx` — применение `resolveAssetUrl`.
+- `client/src/components/RightInfoPanel.tsx` — применение `resolveAssetUrl`.
+- `desktop/package.json`, `package.json`, `client/package.json`, `server/package.json` — бамп версии до 1.9.2.
+- `scripts/test_v192_fixes.js` — автотесты всех компонентов v1.9.2.
+
+**Результаты тестов:**
+- Все автотесты `npm test` успешно пройдены (6/6 сьютов, 18/18 проверок v1.9.2).
+- Сборка `npm run build` завершена с 0 ошибок.
+- Нативные исполняемые файлы Windows `PulseChat-Setup-1.9.2.exe` и `PulseChat-Portable-1.9.2.exe` собраны.
+
+---
 
 ### Версия 1.9.1
 **Дата:** 24 октября 2026  

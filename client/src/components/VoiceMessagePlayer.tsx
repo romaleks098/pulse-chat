@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect, useId } from 'react';
 import { Play, Pause } from 'lucide-react';
+import { resolveAssetUrl } from '../config/runtime';
 
 const activeAudioEmitter = new EventTarget();
 
@@ -17,7 +18,7 @@ export const VoiceMessagePlayer: React.FC<VoiceMessagePlayerProps> = ({ audioUrl
   const [playbackRate, setPlaybackRate] = useState<1 | 1.5 | 2>(1);
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
-  const safeUrl = typeof audioUrl === 'string' ? audioUrl : '';
+  const safeUrl = typeof audioUrl === 'string' ? resolveAssetUrl(audioUrl) : '';
 
   useEffect(() => {
     if (duration && duration > 0) {

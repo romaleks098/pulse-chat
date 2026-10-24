@@ -4,6 +4,7 @@ import { Avatar } from './ui/Avatar';
 import { Tabs } from './ui/Tabs';
 import { VoiceMessagePlayer } from './VoiceMessagePlayer';
 import { formatLastSeen, formatFileSize } from '../utils/format';
+import { resolveAssetUrl } from '../config/runtime';
 import {
   X,
   Image as ImageIcon,
@@ -246,11 +247,11 @@ export const RightInfoPanel: React.FC<RightInfoPanelProps> = ({
                 {mediaMessages.map((m) => (
                   <div
                     key={m.id}
-                    onClick={() => onImageClick(m.fileUrl!, m.fileName)}
+                    onClick={() => onImageClick(resolveAssetUrl(m.fileUrl)!, m.fileName)}
                     className="aspect-square rounded-lg overflow-hidden bg-slate-800 border border-white/5 cursor-pointer group relative"
                   >
                     <img
-                      src={m.fileUrl}
+                      src={resolveAssetUrl(m.fileUrl)}
                       alt={m.fileName || 'Медиа'}
                       className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-200"
                     />
@@ -271,7 +272,7 @@ export const RightInfoPanel: React.FC<RightInfoPanelProps> = ({
                 {fileMessages.map((m) => (
                   <a
                     key={m.id}
-                    href={m.fileUrl}
+                    href={resolveAssetUrl(m.fileUrl)}
                     download={m.fileName || 'file'}
                     target="_blank"
                     rel="noopener noreferrer"
@@ -308,7 +309,7 @@ export const RightInfoPanel: React.FC<RightInfoPanelProps> = ({
                       <span>{m.senderName}</span>
                       <span>{formatLastSeen(m.createdAt)}</span>
                     </div>
-                    <VoiceMessagePlayer audioUrl={m.fileUrl!} isOwn={false} />
+                    <VoiceMessagePlayer audioUrl={resolveAssetUrl(m.fileUrl)} isOwn={false} />
                   </div>
                 ))}
               </div>

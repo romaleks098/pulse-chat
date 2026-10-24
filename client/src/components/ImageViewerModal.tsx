@@ -1,5 +1,6 @@
 import React, { useEffect } from 'react';
 import { X, Download } from 'lucide-react';
+import { resolveAssetUrl } from '../config/runtime';
 
 interface ImageViewerModalProps {
   imageUrl: string | null;
@@ -18,6 +19,8 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({ imageUrl, fi
 
   if (!imageUrl) return null;
 
+  const resolvedUrl = resolveAssetUrl(imageUrl);
+
   return (
     <div
       onClick={onClose}
@@ -25,7 +28,7 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({ imageUrl, fi
     >
       <div className="absolute top-4 right-4 flex items-center gap-3 z-10" onClick={(e) => e.stopPropagation()}>
         <a
-          href={imageUrl}
+          href={resolvedUrl}
           download={fileName || 'image.jpg'}
           target="_blank"
           rel="noopener noreferrer"
@@ -48,7 +51,7 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({ imageUrl, fi
         onClick={(e) => e.stopPropagation()}
       >
         <img
-          src={imageUrl}
+          src={resolvedUrl}
           alt={fileName || 'Enlarged view'}
           className="max-w-full max-h-[85vh] object-contain rounded-2xl shadow-2xl border border-slate-800"
         />

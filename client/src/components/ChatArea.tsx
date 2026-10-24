@@ -4,6 +4,7 @@ import { useCall } from '../context/CallContext';
 import { useTheme } from '../context/ThemeContext';
 import type { Message, ReplyInfo } from '../types';
 import { formatMessageTime, formatFileSize, formatLastSeen, formatDateSeparator } from '../utils/format';
+import { resolveAssetUrl } from '../config/runtime';
 import { api } from '../services/api';
 import { VoiceMessagePlayer } from './VoiceMessagePlayer';
 import { VoiceRecorder } from './VoiceRecorder';
@@ -823,9 +824,9 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                       {msg.type === 'image' && msg.fileUrl && (
                         <div className="mb-1.5 overflow-hidden rounded-xl bg-black/20">
                           <img
-                            src={msg.fileUrl}
+                            src={resolveAssetUrl(msg.fileUrl)}
                             alt={msg.fileName || 'Photo'}
-                            onClick={() => onImageClick(msg.fileUrl!, msg.fileName)}
+                            onClick={() => onImageClick(resolveAssetUrl(msg.fileUrl)!, msg.fileName)}
                             className="max-h-80 w-full object-cover rounded-xl cursor-pointer hover:opacity-95 transition-opacity"
                           />
                         </div>
@@ -850,7 +851,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                             </div>
                           </div>
                           <a
-                            href={msg.fileUrl}
+                            href={resolveAssetUrl(msg.fileUrl)}
                             download={msg.fileName}
                             target="_blank"
                             rel="noopener noreferrer"
@@ -864,7 +865,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                       {/* Voice Message Content */}
                       {msg.type === 'voice' && msg.fileUrl && (
                         <div className="mb-1">
-                          <VoiceMessagePlayer audioUrl={msg.fileUrl} duration={msg.voiceDuration} isOwn={isMe} />
+                          <VoiceMessagePlayer audioUrl={resolveAssetUrl(msg.fileUrl)} duration={msg.voiceDuration} isOwn={isMe} />
                         </div>
                       )}
 

@@ -5,6 +5,7 @@ import fs from 'fs';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import { requireAuth } from '../auth.js';
+import { db } from '../db.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -34,13 +35,27 @@ const upload = multer({
 
 export const uploadRouter = Router();
 
-uploadRouter.post('/', requireAuth, upload.single('file'), (req, res) => {
+uploadRouter.post('/', requireAuth, upload.single('file'), async (req, res) => {
   if (!req.file) {
     return res.status(400).json({ error: 'No file provided' });
   }
 
   const isImage = req.file.mimetype.startsWith('image/');
   const fileUrl = `/uploads/${req.file.filename}`;
+
+  // Persist binary data into PostgreSQL / SQLite media_files table so ephemeral Render restarts don't lose media
+  try {
+    const buffer = await fs.promises.readFile(req.file.path);
+    await db.run(
+      'INSERT INTO media_files (filename, mime_type, data, size) VALUES (?, ?, ?, ?) ON CONFLICT (filename) DO UPDATE SET data = excluded.data, size = excluded.size',
+      req.file.filename,
+      req.file.mimetype,
+      buffer,
+      req.file.size
+    );
+  } catch (err: any) {
+    console.warn('[Upload] Could not persist media file into DB:', err.message);
+  }
 
   res.json({
     url: fileUrl,

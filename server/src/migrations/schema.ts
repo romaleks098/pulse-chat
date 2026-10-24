@@ -224,4 +224,23 @@ export const migrations: Migration[] = [
       ];
     },
   },
+  {
+    version: 5,
+    name: '005_media_files_persistence',
+    up: (isPostgres: boolean) => {
+      const timestampType = isPostgres ? 'TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP' : 'DATETIME DEFAULT CURRENT_TIMESTAMP';
+      const blobType = isPostgres ? 'BYTEA' : 'BLOB';
+
+      return [
+        `CREATE TABLE IF NOT EXISTS media_files (
+          filename TEXT PRIMARY KEY,
+          mime_type TEXT NOT NULL,
+          data ${blobType} NOT NULL,
+          size INTEGER NOT NULL,
+          created_at ${timestampType}
+        );`,
+        `CREATE INDEX IF NOT EXISTS idx_media_files_created ON media_files(created_at);`,
+      ];
+    },
+  },
 ];

@@ -83,7 +83,38 @@ app.get('/api/health', async (_req, res) => {
   });
 });
 
-// Serve uploaded files
+// Serve uploaded files with PostgreSQL/SQLite fallback if container restarted
+const serveMediaFile = async (req: express.Request, res: express.Response, next: express.NextFunction) => {
+  const filename = path.basename(req.params.filename);
+  const localFilePath = path.join(uploadDir, filename);
+
+  // 1. If present on disk, serve directly
+  if (fs.existsSync(localFilePath)) {
+    res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+    return res.sendFile(localFilePath);
+  }
+
+  // 2. Fallback to media_files table in database
+  try {
+    const row = await db.get<any>('SELECT mime_type, data, size FROM media_files WHERE filename = ?', filename);
+    if (row && row.data) {
+      // Re-hydrate local disk cache asynchronously
+      fs.promises.writeFile(localFilePath, row.data).catch(() => {});
+
+      res.setHeader('Content-Type', row.mime_type || 'application/octet-stream');
+      if (row.size) res.setHeader('Content-Length', row.size);
+      res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+      return res.send(row.data);
+    }
+  } catch (err: any) {
+    console.warn(`[Media] Could not load ${filename} from DB:`, err.message);
+  }
+
+  return res.status(404).send('File not found');
+};
+
+app.get('/uploads/:filename', serveMediaFile);
+app.get('/api/uploads/:filename', serveMediaFile);
 app.use('/uploads', express.static(uploadDir));
 
 // API Routes

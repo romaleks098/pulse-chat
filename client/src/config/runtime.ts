@@ -51,3 +51,37 @@ export const SOCKET_URL = BACKEND_URL;
 export const PUBLIC_URL =
   (typeof import.meta !== 'undefined' && import.meta.env?.VITE_PUBLIC_URL) ||
   BACKEND_URL.replace(/^https?:\/\//, '');
+
+/**
+ * Resolves media and asset URLs (images, voice notes, documents, avatars)
+ * Ensures relative paths like `/uploads/...` point to the remote cloud server in native apps (.apk / .exe)
+ */
+export const resolveAssetUrl = (url?: string | null): string => {
+  if (!url || typeof url !== 'string') return '';
+
+  const trimmed = url.trim();
+  if (!trimmed) return '';
+
+  // 1. In-memory and data URLs
+  if (trimmed.startsWith('data:') || trimmed.startsWith('blob:')) {
+    return trimmed;
+  }
+
+  // 2. Full HTTP/HTTPS URLs
+  if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
+    if (isNativeApp && (trimmed.includes('localhost:3001') || trimmed.includes('127.0.0.1:3001'))) {
+      return trimmed.replace(/^https?:\/\/(localhost|127\.0\.0\.1):3001/, PRODUCTION_REMOTE_BACKEND);
+    }
+    return trimmed;
+  }
+
+  // 3. Relative uploads and API paths
+  const normalized = trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
+  const base = isNativeApp
+    ? PRODUCTION_REMOTE_BACKEND
+    : typeof window !== 'undefined'
+      ? window.location.origin
+      : PRODUCTION_REMOTE_BACKEND;
+
+  return `${base}${normalized}`;
+};

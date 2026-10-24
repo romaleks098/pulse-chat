@@ -3,31 +3,74 @@ import { api } from '../services/api';
 import { io, Socket } from 'socket.io-client';
 
 /**
+ * In-flight authorization code exchange promise cache
+ * Completely prevents race conditions between WebSocket, Polling, and Deep Link
+ */
+const inFlightExchanges = new Map<string, Promise<{ token: string; refreshToken?: string; user: any }>>();
+
+export async function safeExchangeAuthCode(
+  code: string,
+  verifier: string,
+  redirectUri: string
+): Promise<{ token: string; refreshToken?: string; user: any }> {
+  if (inFlightExchanges.has(code)) {
+    return inFlightExchanges.get(code)!;
+  }
+
+  const exchangePromise = (async () => {
+    try {
+      const result = await api.exchangeAuthCode(code, verifier, redirectUri);
+      return result;
+    } finally {
+      setTimeout(() => inFlightExchanges.delete(code), 20000);
+    }
+  })();
+
+  inFlightExchanges.set(code, exchangePromise);
+  return exchangePromise;
+}
+
+/**
  * Generates high-entropy random string for PKCE code verifier (RFC 7636)
  */
 export function generateCodeVerifier(length: number = 64): string {
   const charset = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~';
   const randomValues = new Uint8Array(length);
-  window.crypto.getRandomValues(randomValues);
+  if (typeof window !== 'undefined' && window.crypto?.getRandomValues) {
+    window.crypto.getRandomValues(randomValues);
+  } else {
+    for (let i = 0; i < length; i++) {
+      randomValues[i] = Math.floor(Math.random() * 256);
+    }
+  }
   return Array.from(randomValues)
     .map((v) => charset[v % charset.length])
     .join('');
 }
 
 /**
- * Computes S256 code challenge: BASE64URL(SHA256(code_verifier))
+ * Computes PKCE code challenge: S256 or falls back cleanly to plain if SubtleCrypto is unavailable
  */
-export async function generateCodeChallenge(verifier: string): Promise<string> {
-  const encoder = new TextEncoder();
-  const data = encoder.encode(verifier);
-  const digest = await window.crypto.subtle.digest('SHA-256', data);
+export async function generateCodeChallenge(verifier: string): Promise<{ challenge: string; method: 'S256' | 'plain' }> {
+  if (typeof window !== 'undefined' && window.crypto?.subtle?.digest) {
+    try {
+      const encoder = new TextEncoder();
+      const data = encoder.encode(verifier);
+      const digest = await window.crypto.subtle.digest('SHA-256', data);
 
-  // Convert ArrayBuffer to Base64URL string
-  const base64 = btoa(String.fromCharCode(...new Uint8Array(digest)));
-  return base64
-    .replace(/\+/g, '-')
-    .replace(/\//g, '_')
-    .replace(/=+$/, '');
+      // Convert ArrayBuffer to Base64URL string
+      const base64 = btoa(String.fromCharCode(...new Uint8Array(digest)));
+      const challenge = base64
+        .replace(/\+/g, '-')
+        .replace(/\//g, '_')
+        .replace(/=+$/, '');
+      return { challenge, method: 'S256' };
+    } catch (e) {
+      console.warn('[PKCE] SubtleCrypto failed, falling back to plain challenge:', e);
+    }
+  }
+
+  return { challenge: verifier, method: 'plain' };
 }
 
 /**
@@ -40,7 +83,7 @@ export async function startNativeOAuth(
   onError?: (err: Error) => void
 ): Promise<void> {
   const verifier = generateCodeVerifier();
-  const challenge = await generateCodeChallenge(verifier);
+  const { challenge, method } = await generateCodeChallenge(verifier);
   const state = 'nat_' + generateCodeVerifier(16);
   const redirectUri = 'pulsechat://auth/callback';
 
@@ -50,8 +93,11 @@ export async function startNativeOAuth(
   localStorage.setItem('pulse_pkce_state', state);
 
   try {
-    const session = await api.createNativeAuthSession(provider, challenge, 'S256', redirectUri, state);
+    const session = await api.createNativeAuthSession(provider, challenge, method, redirectUri, state);
     const authUrl = session.authUrl;
+
+    // Bind verifier to this specific session ID as well for fail-safe retrieval
+    localStorage.setItem(`pulse_pkce_verifier_${session.nativeSessionId}`, verifier);
 
     // Open authUrl in external system browser (not inside WebView/Electron frame)
     if ((window as any).electronAPI?.openExternal) {
@@ -86,9 +132,10 @@ export async function startNativeOAuth(
       cleanup();
 
       try {
-        const result = await api.exchangeAuthCode(code, verifier, redirectUri);
+        const result = await safeExchangeAuthCode(code, verifier, redirectUri);
         localStorage.removeItem('pulse_pkce_verifier');
         localStorage.removeItem('pulse_pkce_state');
+        localStorage.removeItem(`pulse_pkce_verifier_${session.nativeSessionId}`);
         sessionStorage.removeItem('pulse_pkce_verifier');
         sessionStorage.removeItem('pulse_pkce_state');
 
@@ -161,7 +208,7 @@ export async function startOAuthPKCE(
   }
 
   const verifier = generateCodeVerifier();
-  const challenge = await generateCodeChallenge(verifier);
+  const { challenge, method } = await generateCodeChallenge(verifier);
   const state = generateCodeVerifier(16);
 
   sessionStorage.setItem('pulse_pkce_verifier', verifier);
@@ -170,7 +217,7 @@ export async function startOAuthPKCE(
   const redirectUri = `${window.location.origin}/`;
   const url = new URL(`${API_BASE}/auth/${provider}`);
   url.searchParams.set('code_challenge', challenge);
-  url.searchParams.set('code_challenge_method', 'S256');
+  url.searchParams.set('code_challenge_method', method);
   url.searchParams.set('redirect_uri', redirectUri);
   url.searchParams.set('state', state);
 

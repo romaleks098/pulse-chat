@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Bookmark, Radio, Users } from 'lucide-react';
+import { resolveAssetUrl } from '../../config/runtime';
 
 interface AvatarProps {
   src?: string | null;
@@ -84,7 +85,7 @@ export const Avatar: React.FC<AvatarProps> = ({
     <div className={`relative shrink-0 select-none ${className}`}>
       {src && !imgError ? (
         <img
-          src={src}
+          src={resolveAssetUrl(src)}
           alt={name}
           onError={() => setImgError(true)}
           className={`${sizeConfig.container} rounded-full object-cover bg-slate-800 border border-white/10 shadow-sm`}

@@ -599,7 +599,12 @@ setInterval(() => {
 }, 60 * 1000);
 
 authRouter.post('/native/session', authRateLimiter(30), async (req, res) => {
-  const { provider, code_challenge, code_challenge_method, redirect_uri, state } = req.body;
+  const provider = req.body.provider;
+  const codeChallenge = req.body.code_challenge || req.body.codeChallenge || '';
+  const codeChallengeMethod = req.body.code_challenge_method || req.body.codeChallengeMethod || 'S256';
+  const redirectUri = req.body.redirect_uri || req.body.redirectUri || 'pulsechat://auth/callback';
+  const state = req.body.state || '';
+
   if (!provider) {
     return res.status(400).json({ error: 'Provider is required' });
   }
@@ -615,10 +620,10 @@ authRouter.post('/native/session', authRateLimiter(30), async (req, res) => {
     expiresAt,
     status: 'pending',
     provider,
-    codeChallenge: code_challenge || '',
-    codeChallengeMethod: code_challenge_method || 'S256',
-    redirectUri: redirect_uri || 'pulsechat://auth/callback',
-    state: state || '',
+    codeChallenge,
+    codeChallengeMethod,
+    redirectUri,
+    state,
   });
 
   // Persist into database so server restart/cold start doesn't lose the native session
@@ -626,14 +631,14 @@ authRouter.post('/native/session', authRateLimiter(30), async (req, res) => {
     await db.run(`
       INSERT INTO native_auth_sessions (id, provider, code_challenge, code_challenge_method, redirect_uri, state, status, expires_at, created_at)
       VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)
-    `, nativeSessionId, provider, code_challenge || '', code_challenge_method || 'S256', redirect_uri || 'pulsechat://auth/callback', state || '', expiresAtIso, nowIso);
+    `, nativeSessionId, provider, codeChallenge, codeChallengeMethod, redirectUri, state, expiresAtIso, nowIso);
   } catch (err: any) {
     console.warn('[Native Auth] Could not persist native session to DB:', err.message);
   }
 
   const { publicUrl } = getOAuthEnv();
   const baseUrl = publicUrl || (process.env.NODE_ENV === 'production' ? 'https://pulse-chat-qel7.onrender.com' : 'http://localhost:3001');
-  const authUrl = `${baseUrl}/api/auth/${provider}?native_session=${nativeSessionId}&code_challenge=${encodeURIComponent(code_challenge || '')}&code_challenge_method=${encodeURIComponent(code_challenge_method || 'S256')}&redirect_uri=${encodeURIComponent(redirect_uri || 'pulsechat://auth/callback')}&state=${encodeURIComponent(state || nativeSessionId)}`;
+  const authUrl = `${baseUrl}/api/auth/${provider}?native_session=${nativeSessionId}&code_challenge=${encodeURIComponent(codeChallenge)}&code_challenge_method=${encodeURIComponent(codeChallengeMethod)}&redirect_uri=${encodeURIComponent(redirectUri)}&state=${encodeURIComponent(state || nativeSessionId)}`;
 
   res.json({
     nativeSessionId,

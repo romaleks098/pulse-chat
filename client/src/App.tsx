@@ -15,8 +15,9 @@ import { SettingsModal } from './components/SettingsModal';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { DesktopTitlebar } from './components/DesktopTitlebar';
 import { isCapacitor, isElectron } from './config';
-import { api } from './services/api';
+import { safeExchangeAuthCode } from './utils/pkce';
 import { App as CapApp } from '@capacitor/app';
+import { StatusBar, Style } from '@capacitor/status-bar';
 import { Download } from 'lucide-react';
 
 const MainLayout: React.FC = () => {
@@ -124,6 +125,20 @@ const MainLayout: React.FC = () => {
     return () => window.removeEventListener('popstate', handlePopState);
   }, [activeConversationId, activeImage, isSettingsOpen, isProfileOpen, isPhoneConnectOpen, isNewChatOpen, selectConversation]);
 
+  // Android Capacitor StatusBar and safe-area initialization
+  useEffect(() => {
+    if (isCapacitor) {
+      document.documentElement.classList.add('capacitor-android');
+      document.body.classList.add('capacitor-android');
+
+      try {
+        StatusBar.setOverlaysWebView({ overlay: false }).catch(() => {});
+        StatusBar.setBackgroundColor({ color: '#090d16' }).catch(() => {});
+        StatusBar.setStyle({ style: Style.Dark }).catch(() => {});
+      } catch (_) {}
+    }
+  }, []);
+
   // Deep link callback listener for native apps (Capacitor on Android and Electron on Windows)
   useEffect(() => {
     const handleDeepLinkUrl = async (rawUrl: string) => {
@@ -133,7 +148,7 @@ const MainLayout: React.FC = () => {
         const code = url.searchParams.get('code');
         const verifier = localStorage.getItem('pulse_pkce_verifier') || sessionStorage.getItem('pulse_pkce_verifier');
         if (code && verifier) {
-          const res = await api.exchangeAuthCode(code, verifier, 'pulsechat://auth/callback');
+          const res = await safeExchangeAuthCode(code, verifier, 'pulsechat://auth/callback');
           localStorage.removeItem('pulse_pkce_verifier');
           localStorage.removeItem('pulse_pkce_state');
           sessionStorage.removeItem('pulse_pkce_verifier');
@@ -303,10 +318,22 @@ export default function App() {
           <ChatProvider>
             <CallProvider>
               <div className="h-[100dvh] w-full max-w-full flex flex-col overflow-hidden bg-[var(--bg-app,#090d16)]">
+                {isCapacitor && (
+                  <div
+                    className="w-full shrink-0 bg-[var(--bg-app,#090d16)] select-none pointer-events-none"
+                    style={{ height: 'var(--safe-top, 0px)' }}
+                  />
+                )}
                 <DesktopTitlebar />
                 <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
                   <MainLayout />
                 </div>
+                {isCapacitor && (
+                  <div
+                    className="w-full shrink-0 bg-[var(--bg-app,#090d16)] select-none pointer-events-none"
+                    style={{ height: 'var(--safe-bottom, 0px)' }}
+                  />
+                )}
               </div>
             </CallProvider>
           </ChatProvider>
