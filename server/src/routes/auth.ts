@@ -460,14 +460,59 @@ function getOAuthEnv() {
   };
 
   return {
-    publicUrl: (getClean('PUBLIC_URL') || getClean('RENDER_EXTERNAL_URL') || '').replace(/\/+$/, ''),
+    publicUrl: (
+      getClean('PUBLIC_URL') ||
+      getClean('RENDER_EXTERNAL_URL') ||
+      (process.env.NODE_ENV === 'production' ? 'https://pulse-chat-qel7.onrender.com' : '')
+    ).replace(/\/+$/, ''),
     googleClientId: getClean('GOOGLE_CLIENT_ID'),
     googleClientSecret: getClean('GOOGLE_CLIENT_SECRET'),
     githubClientId: getClean('GITHUB_CLIENT_ID'),
     githubClientSecret: getClean('GITHUB_CLIENT_SECRET'),
-    telegramBotToken: getClean('TELEGRAM_BOT_TOKEN'),
-    telegramBotName: getClean('TELEGRAM_BOT_NAME'),
+    telegramBotToken:
+      getClean('TELEGRAM_BOT_TOKEN') ||
+      getClean('TELEGRAM_TOKEN') ||
+      getClean('BOT_TOKEN'),
+    telegramBotName:
+      getClean('TELEGRAM_BOT_NAME') ||
+      getClean('TELEGRAM_BOT_USERNAME') ||
+      getClean('VITE_TELEGRAM_BOT_USERNAME') ||
+      getClean('TELEGRAM_USERNAME'),
   };
+}
+
+let cachedTelegramBotUsername: string | null = null;
+
+/**
+ * Automatically fetches the bot username from Telegram API getMe using TELEGRAM_BOT_TOKEN
+ * if not explicitly provided via environment variables.
+ */
+export async function fetchTelegramBotUsername(): Promise<string | null> {
+  const env = getOAuthEnv();
+  if (env.telegramBotName) {
+    return env.telegramBotName.replace(/^@/, '');
+  }
+  if (cachedTelegramBotUsername) {
+    return cachedTelegramBotUsername;
+  }
+  if (!env.telegramBotToken) {
+    return null;
+  }
+
+  try {
+    const resp = await fetch(`https://api.telegram.org/bot${env.telegramBotToken}/getMe`);
+    const data: any = await resp.json().catch(() => ({}));
+    if (data?.ok && data?.result?.username) {
+      cachedTelegramBotUsername = data.result.username;
+      console.log(`[Telegram] Auto-detected bot username: @${cachedTelegramBotUsername} (${data.result.first_name || ''})`);
+      return cachedTelegramBotUsername;
+    } else {
+      console.warn('[Telegram] getMe returned error:', data?.description || data);
+    }
+  } catch (err: any) {
+    console.error('[Telegram] Failed to fetch bot info via getMe:', err.message || err);
+  }
+  return null;
 }
 
 /**
@@ -485,10 +530,11 @@ function getCallbackUrl(req: Request, provider: 'google' | 'github'): string {
 }
 
 // Public providers configuration
-authRouter.get('/providers', (_req, res) => {
+authRouter.get('/providers', async (_req, res) => {
   const env = getOAuthEnv();
+  const botUsername = (await fetchTelegramBotUsername()) || env.telegramBotName || null;
   res.json({
-    telegramBotName: env.telegramBotName,
+    telegramBotName: botUsername,
     googleClientId: env.googleClientId,
     githubClientId: env.githubClientId,
   });
@@ -1172,7 +1218,8 @@ async function sendTelegramMessage(chatId: number | string, text: string) {
 function getTelegramWebhookSecret(): string {
   const explicit = process.env.TELEGRAM_WEBHOOK_SECRET?.trim();
   if (explicit) return explicit;
-  const botToken = process.env.TELEGRAM_BOT_TOKEN?.trim() || '';
+  const { telegramBotToken } = getOAuthEnv();
+  const botToken = telegramBotToken || '';
   const jwtSecret = process.env.JWT_SECRET?.trim() || 'pulsechat_tg_secret_salt';
   return crypto.createHmac('sha256', jwtSecret).update(botToken).digest('hex').slice(0, 48);
 }
@@ -1198,18 +1245,32 @@ export async function setupTelegramWebhook() {
     public_url: publicUrl || null,
   });
 
-  if (telegramBotToken && publicUrl && publicUrl.startsWith('https://')) {
+  if (!telegramBotToken) {
+    console.log('[Telegram Setup] No TELEGRAM_BOT_TOKEN provided, skipping bot webhook registration');
+    return;
+  }
+
+  // 1. Auto-discover bot username from Telegram API getMe
+  const botUsername = await fetchTelegramBotUsername();
+  if (botUsername) {
+    console.log(`[Telegram Setup] Bot identity confirmed: @${botUsername}`);
+  }
+
+  // 2. Register webhook if publicUrl is HTTPS
+  if (publicUrl && publicUrl.startsWith('https://')) {
     try {
       const webhookUrl = `${publicUrl}/api/auth/telegram/webhook`;
       const secretToken = getTelegramWebhookSecret();
       const resp = await fetch(
-        `https://api.telegram.org/bot${telegramBotToken}/setWebhook?url=${encodeURIComponent(webhookUrl)}&secret_token=${encodeURIComponent(secretToken)}`
+        `https://api.telegram.org/bot${telegramBotToken}/setWebhook?url=${encodeURIComponent(webhookUrl)}&secret_token=${encodeURIComponent(secretToken)}&allowed_updates=${encodeURIComponent(JSON.stringify(['message']))}`
       );
       const data: any = await resp.json().catch(() => ({}));
       console.log(`[Telegram] Webhook registered at ${webhookUrl} with secret_token:`, data?.ok ? 'OK' : data?.description);
     } catch (e: any) {
       console.error('[Telegram] Failed to register webhook:', e.message || e);
     }
+  } else {
+    console.warn('[Telegram Setup] Webhook registration skipped because publicUrl is not HTTPS:', publicUrl);
   }
 }
 
@@ -1230,13 +1291,18 @@ authRouter.post('/telegram/bot/session', authRateLimiter(20), async (req, res) =
     state,
   });
 
-  const { telegramBotName } = getOAuthEnv();
-  const botName = telegramBotName || 'PulseChatBot';
-  const deepLink = `https://t.me/${botName}?start=${token}`;
+  const { telegramBotToken, telegramBotName } = getOAuthEnv();
+  const botUsername = (await fetchTelegramBotUsername()) || telegramBotName || 'PulseChatBot';
+
+  if (!telegramBotToken && !telegramBotName) {
+    console.warn('[Telegram] Session created but TELEGRAM_BOT_TOKEN is not configured on server');
+  }
+
+  const deepLink = `https://t.me/${botUsername}?start=${token}`;
 
   res.json({
     token,
-    botName,
+    botName: botUsername,
     deepLink,
     expiresInSeconds: 300,
   });
@@ -1263,6 +1329,13 @@ authRouter.post('/telegram/webhook', async (req, res) => {
     const text = message.text.trim();
     const match = text.match(/^\/start\s+(tg_[a-zA-Z0-9_-]+|[a-zA-Z0-9_-]+)/i);
     if (!match) {
+      const { telegramBotToken } = getOAuthEnv();
+      if (text.startsWith('/start') && telegramBotToken) {
+        await sendTelegramMessage(
+          message.chat.id,
+          '👋 Здравствуйте!\n\nЭтот бот используется для быстрой и безопасной авторизации в PulseChat.\n\nДля входа откройте веб-приложение PulseChat и нажмите кнопку «Telegram».'
+        );
+      }
       return res.sendStatus(200);
     }
 
