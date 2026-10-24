@@ -11,6 +11,8 @@ server/uploads/*
 client/android/.gradle
 client/android/app/build
 desktop/client_dist/
+desktop/release/
+release/
 release-windows/
 *.apk
 *.keystore
