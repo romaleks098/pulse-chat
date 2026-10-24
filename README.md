@@ -1,8 +1,21 @@
 # 💬 PulseChat — Мессенджер для ПК и Android
 
-> 🤖 **Главная инструкция и журнал разработки (AI README):**
-> Подробная история всех обновлений, архитектурных решений, фичей и исправлений ведётся в файле [**`AI_README.md`**](./AI_README.md).
-> **Правило проекта:** при каждом изменении кодовой базы (новое обновление, фича, рефакторинг или исправление) разработчик обязан фиксировать правки в `AI_README.md`!
+> 🤖 **Главная инструкция и журнал разработки:** [**`AI_README.md`**](./AI_README.md) | [**`CHANGELOG.md`**](./CHANGELOG.md)
+
+---
+
+## 📥 СКАЧАТЬ ПРИЛОЖЕНИЯ (Релиз v1.9.0)
+
+Готовые автономные приложения для Android и Windows собраны и доступны для загрузки:
+
+| Платформа | Файл | Размер | Прямая ссылка на скачивание |
+|---|---|---|---|
+| 🤖 **Android (Смартфон)** | `PulseChat-Android.apk` | **4.3 МБ** | 📲 [**СКАЧАТЬ .APK ДЛЯ ANDROID**](https://github.com/romaleks098/pulse-chat/releases/download/v1.9.0/PulseChat-Android.apk) |
+| 💻 **Windows** (Инсталлятор) | `PulseChat-Setup-1.9.0.exe` | **87.5 МБ** | 💻 [**СКАЧАТЬ УСТАНОВЩИК WINDOWS**](https://github.com/romaleks098/pulse-chat/releases/download/v1.9.0/PulseChat-Setup-1.9.0.exe) |
+| 💻 **Windows** (Portable, в 1 клик) | `PulseChat-Portable-1.9.0.exe` | **80.3 МБ** | ⚡ [**СКАЧАТЬ PORTABLE БЕЗ УСТАНОВКИ**](https://github.com/romaleks098/pulse-chat/releases/download/v1.9.0/PulseChat-Portable-1.9.0.exe) |
+
+> 📁 Файл Android APK также доступен прямо в репозитории: [`downloads/PulseChat-Android.apk`](./downloads/PulseChat-Android.apk)  
+> 🌐 Страница официального релиза: [https://github.com/romaleks098/pulse-chat/releases/latest](https://github.com/romaleks098/pulse-chat/releases/latest)
 
 ---
 
@@ -10,8 +23,8 @@
 
 Для запуска нативного десктопного приложения PulseChat на ПК:
 
-1. **Быстрый запуск**: Дважды кликните по файлу **`PulseChat-Desktop.bat`** в корне проекта.
-2. **Либо через терминал**:
+1. **Скачать готовый `.exe`**: [PulseChat-Setup-1.9.0.exe](https://github.com/romaleks098/pulse-chat/releases/download/v1.9.0/PulseChat-Setup-1.9.0.exe) или [Portable](https://github.com/romaleks098/pulse-chat/releases/download/v1.9.0/PulseChat-Portable-1.9.0.exe).
+2. **Либо запустить из исходников**:
    ```bash
    npm run desktop
    ```
@@ -21,15 +34,11 @@
 
 ## 📱 Приложение для Android (APK)
 
-Для Android доступно 3 способа:
-
-1. **Скачать готовый `.apk` из GitHub Actions**:
-   - Откройте вкладку [GitHub Actions в вашем репозитории](https://github.com/romaleks098/pulse-chat/actions).
-   - Выберите последний запуск сборки **«Build Android APK & Windows App»**.
-   - Внизу в блоке **Artifacts** скачайте готовый установочный файл **`PulseChat-Android-APK`** прямо на телефон.
-2. **Установка как PWA (без сборки)**:
-   - Откройте мессенджер в мобильном Chrome и нажмите в меню браузера **«Установить приложение»**.
-3. **Локальная сборка в Android Studio**:
+1. **Скачать готовый `.apk`**:  
+   Скачайте установочный файл [**`PulseChat-Android.apk`**](https://github.com/romaleks098/pulse-chat/releases/download/v1.9.0/PulseChat-Android.apk) прямо на смартфон и установите.
+2. **Установка как PWA (без сборки)**:  
+   Откройте веб-версию в Chrome на телефоне и выберите «Установить приложение».
+3. **Локальная сборка в Android Studio**:  
    ```bash
    npm run cap:android
    ```

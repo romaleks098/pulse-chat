@@ -15,6 +15,7 @@ desktop/release/
 release/
 release-windows/
 *.apk
+!downloads/*.apk
 *.keystore
 *.jks
 *.p8
