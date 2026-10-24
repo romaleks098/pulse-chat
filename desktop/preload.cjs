@@ -6,6 +6,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   minimize: () => ipcRenderer.send('window-minimize'),
   maximize: () => ipcRenderer.send('window-maximize'),
   close: () => ipcRenderer.send('window-close'),
+  focusWindow: () => ipcRenderer.send('window-focus'),
   isMaximized: () => ipcRenderer.invoke('window-is-maximized'),
   openExternal: (url) => ipcRenderer.send('open-external', url),
   setUnreadCount: (count) => ipcRenderer.send('set-unread-count', count),

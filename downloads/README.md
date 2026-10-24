@@ -1,11 +1,11 @@
-# 📥 Готовые приложения PulseChat (Релиз v1.9.2)
+# 📥 Готовые приложения PulseChat (Релиз v1.9.3)
 
 Здесь собраны ссылки и установочные файлы автономных нативных приложений PulseChat:
 
 ## 📱 Android (.apk)
 - **Файл в этом репозитории:** [`PulseChat-Android.apk`](./PulseChat-Android.apk) (4.3 МБ)
 - **Прямое скачивание из GitHub Release:**  
-  👉 **[Скачать PulseChat-Android.apk](https://github.com/romaleks098/pulse-chat/releases/download/v1.9.2/PulseChat-Android.apk)**
+  👉 **[Скачать PulseChat-Android.apk](https://github.com/romaleks098/pulse-chat/releases/download/v1.9.3/PulseChat-Android.apk)**
 
 ### Как установить на телефон:
 1. Скачайте файл `PulseChat-Android.apk` на ваш телефон (или отправьте его себе в Telegram/сохраните на диск).
@@ -19,11 +19,11 @@
 Из-за ограничений Git на хранение тяжёлых бинарных файлов (80+ МБ), исполняемые файлы Windows размещены в официальном релизе GitHub Releases:
 
 1. **Инсталлятор с ярлыками:**  
-   👉 **[Скачать PulseChat-Setup-1.9.2.exe (87.5 МБ)](https://github.com/romaleks098/pulse-chat/releases/download/v1.9.2/PulseChat-Setup-1.9.2.exe)**  
+   👉 **[Скачать PulseChat-Setup-1.9.3.exe (87.5 МБ)](https://github.com/romaleks098/pulse-chat/releases/download/v1.9.3/PulseChat-Setup-1.9.3.exe)**  
    *Устанавливает приложение на ваш ПК, создаёт ярлык на рабочем столе и в меню «Пуск».*
 
 2. **Портативная версия (в один клик):**  
-   👉 **[Скачать PulseChat-Portable-1.9.2.exe (80.3 МБ)](https://github.com/romaleks098/pulse-chat/releases/download/v1.9.2/PulseChat-Portable-1.9.2.exe)**  
+   👉 **[Скачать PulseChat-Portable-1.9.3.exe (80.3 МБ)](https://github.com/romaleks098/pulse-chat/releases/download/v1.9.3/PulseChat-Portable-1.9.3.exe)**  
    *Запускается мгновенно без установки и не требует прав администратора.*
 
 ---

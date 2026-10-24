@@ -139,6 +139,11 @@ export async function startNativeOAuth(
         sessionStorage.removeItem('pulse_pkce_verifier');
         sessionStorage.removeItem('pulse_pkce_state');
 
+        // Automatically bring Electron window to front upon successful auth
+        try {
+          (window as any).electronAPI?.focusWindow?.();
+        } catch (_) {}
+
         // Dispatch custom event for ChatContext
         window.dispatchEvent(new CustomEvent('pulse:auth-success', { detail: result }));
 
@@ -168,7 +173,7 @@ export async function startNativeOAuth(
       console.warn('Socket connect failed, falling back to polling:', e);
     }
 
-    // 2. Fallback polling every 2s
+    // 2. Fallback polling every 1000ms (1 second) for instant native login
     pollInterval = setInterval(async () => {
       if (completed) return;
       try {
@@ -177,7 +182,7 @@ export async function startNativeOAuth(
           handleSuccess(check.code);
         }
       } catch (_) {}
-    }, 2000);
+    }, 1000);
 
     // Timeout after 10 minutes
     setTimeout(() => {

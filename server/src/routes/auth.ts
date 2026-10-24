@@ -770,6 +770,7 @@ async function completeOAuthRedirect(
     });
 
     const deepLink = `pulsechat://auth/callback?code=${encodeURIComponent(authCode)}&state=${encodeURIComponent(natSess?.state || state || '')}`;
+    const isServerAndroid = Boolean(req.headers['user-agent'] && /Android/i.test(req.headers['user-agent']));
 
     return res.send(`
       <!DOCTYPE html>
@@ -784,28 +785,56 @@ async function completeOAuthRedirect(
           .icon { width: 68px; height: 68px; margin: 0 auto 20px; background: rgba(16, 185, 129, 0.15); border: 1px solid rgba(16, 185, 129, 0.3); border-radius: 22px; display: flex; align-items: center; justify-content: center; font-size: 34px; color: #10b981; }
           h2 { margin: 0 0 10px; font-size: 22px; font-weight: 700; color: #fff; }
           p { margin: 0 0 24px; font-size: 14px; color: #94a3b8; line-height: 1.5; }
-          .btn-primary { display: inline-flex; align-items: center; justify-content: center; width: 100%; padding: 15px 20px; background: #6366f1; color: #fff; text-decoration: none; border-radius: 14px; font-weight: 600; font-size: 15px; box-shadow: 0 10px 15px -3px rgba(99, 102, 241, 0.4); box-sizing: border-box; transition: background 0.2s; }
+          .btn-primary { display: inline-flex; align-items: center; justify-content: center; width: 100%; padding: 15px 20px; background: #6366f1; color: #fff; text-decoration: none; border-radius: 14px; font-weight: 600; font-size: 15px; box-shadow: 0 10px 15px -3px rgba(99, 102, 241, 0.4); box-sizing: border-box; border: none; cursor: pointer; transition: background 0.2s; }
           .btn-primary:hover { background: #4f46e5; }
           .btn-secondary { display: inline-flex; align-items: center; justify-content: center; width: 100%; margin-top: 12px; padding: 12px 20px; background: transparent; color: #94a3b8; border: 1px solid rgba(255,255,255,0.1); border-radius: 14px; font-size: 13px; font-weight: 500; cursor: pointer; box-sizing: border-box; }
           .btn-secondary:hover { color: #f8fafc; border-color: rgba(255,255,255,0.2); }
         </style>
-        <script>
-          try {
-            window.location.href = "${deepLink}";
-          } catch (e) {}
-          setTimeout(() => {
-            try { window.close(); } catch (_) {}
-          }, 3000);
-        </script>
       </head>
       <body>
         <div class="card">
           <div class="icon">✓</div>
-          <h2>Вход подтверждён!</h2>
-          <p>Авторизация успешно завершена. Приложение PulseChat должно открыться автоматически.</p>
-          <a href="${deepLink}" class="btn-primary">Вернуться в приложение PulseChat</a>
-          <button type="button" class="btn-secondary" onclick="window.close();">Закрыть окно</button>
+          <!-- Desktop View: NO pulsechat:// invocation to prevent Windows system error dialog -->
+          <div id="desktop-view" style="${isServerAndroid ? 'display: none;' : 'display: block;'}">
+            <h2>Авторизация успешна!</h2>
+            <p>Вы уже вошли в приложение PulseChat.<br>Эту вкладку можно закрыть.</p>
+            <button type="button" class="btn-primary" onclick="window.close();">Закрыть вкладку</button>
+          </div>
+
+          <!-- Android View: deep-link intent return -->
+          <div id="android-view" style="${isServerAndroid ? 'display: block;' : 'display: none;'}">
+            <h2>Вход подтверждён!</h2>
+            <p>Авторизация успешно завершена. Приложение PulseChat должно открыться автоматически.</p>
+            <a href="${deepLink}" class="btn-primary">Вернуться в приложение PulseChat</a>
+            <button type="button" class="btn-secondary" onclick="window.close();">Закрыть окно</button>
+          </div>
         </div>
+
+        <script>
+          (function() {
+            var isAndroid = /Android/i.test(navigator.userAgent);
+            var desktopView = document.getElementById('desktop-view');
+            var androidView = document.getElementById('android-view');
+
+            if (isAndroid) {
+              if (desktopView) desktopView.style.display = 'none';
+              if (androidView) androidView.style.display = 'block';
+              try {
+                window.location.href = "${deepLink}";
+              } catch (e) {}
+              setTimeout(function() {
+                try { window.close(); } catch (_) {}
+              }, 3000);
+            } else {
+              if (desktopView) desktopView.style.display = 'block';
+              if (androidView) androidView.style.display = 'none';
+              // Desktop: Do not touch pulsechat:// - desktop polls via WebSocket/HTTP
+              setTimeout(function() {
+                try { window.close(); } catch (_) {}
+              }, 1500);
+            }
+          })();
+        </script>
       </body>
       </html>
     `);
@@ -822,6 +851,7 @@ async function completeOAuthRedirect(
 
     if (targetRedirectUri.startsWith('pulsechat://') || targetRedirectUri.startsWith('app://')) {
       const deepLink = redirectUrl.toString();
+      const isServerAndroid = Boolean(req.headers['user-agent'] && /Android/i.test(req.headers['user-agent']));
       return res.send(`
         <!DOCTYPE html>
         <html lang="ru">
@@ -835,21 +865,48 @@ async function completeOAuthRedirect(
             .icon { width: 64px; height: 64px; margin: 0 auto 20px; background: rgba(16, 185, 129, 0.15); border: 1px solid rgba(16, 185, 129, 0.3); border-radius: 20px; display: flex; align-items: center; justify-content: center; font-size: 32px; color: #10b981; }
             h2 { margin: 0 0 8px; font-size: 20px; font-weight: 700; color: #fff; }
             p { margin: 0 0 24px; font-size: 13px; color: #94a3b8; line-height: 1.5; }
-            .btn { display: inline-flex; align-items: center; justify-content: center; width: 100%; padding: 14px 20px; background: #6366f1; color: #fff; text-decoration: none; border-radius: 14px; font-weight: 600; font-size: 14px; box-shadow: 0 10px 15px -3px rgba(99, 102, 241, 0.4); box-sizing: border-box; }
+            .btn { display: inline-flex; align-items: center; justify-content: center; width: 100%; padding: 14px 20px; background: #6366f1; color: #fff; text-decoration: none; border-radius: 14px; font-weight: 600; font-size: 14px; box-shadow: 0 10px 15px -3px rgba(99, 102, 241, 0.4); box-sizing: border-box; border: none; cursor: pointer; }
           </style>
-          <script>
-            setTimeout(() => {
-              window.location.href = "${deepLink}";
-            }, 250);
-          </script>
         </head>
         <body>
           <div class="card">
             <div class="icon">✓</div>
-            <h2>Вход выполнен!</h2>
-            <p>Авторизация прошла успешно. Возвращаемся в приложение PulseChat...</p>
-            <a href="${deepLink}" class="btn">Открыть приложение PulseChat</a>
+            <!-- Desktop View -->
+            <div id="desktop-view" style="${isServerAndroid ? 'display: none;' : 'display: block;'}">
+              <h2>Авторизация успешна!</h2>
+              <p>Вы уже вошли в приложение PulseChat.<br>Эту вкладку можно закрыть.</p>
+              <button type="button" class="btn" onclick="window.close();">Закрыть вкладку</button>
+            </div>
+
+            <!-- Android View -->
+            <div id="android-view" style="${isServerAndroid ? 'display: block;' : 'display: none;'}">
+              <h2>Вход выполнен!</h2>
+              <p>Авторизация прошла успешно. Возвращаемся в приложение PulseChat...</p>
+              <a href="${deepLink}" class="btn">Открыть приложение PulseChat</a>
+            </div>
           </div>
+
+          <script>
+            (function() {
+              var isAndroid = /Android/i.test(navigator.userAgent);
+              var desktopView = document.getElementById('desktop-view');
+              var androidView = document.getElementById('android-view');
+
+              if (isAndroid) {
+                if (desktopView) desktopView.style.display = 'none';
+                if (androidView) androidView.style.display = 'block';
+                setTimeout(function() {
+                  window.location.href = "${deepLink}";
+                }, 250);
+              } else {
+                if (desktopView) desktopView.style.display = 'block';
+                if (androidView) androidView.style.display = 'none';
+                setTimeout(function() {
+                  try { window.close(); } catch (_) {}
+                }, 1500);
+              }
+            })();
+          </script>
         </body>
         </html>
       `);

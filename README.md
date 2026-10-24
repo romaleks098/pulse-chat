@@ -4,15 +4,15 @@
 
 ---
 
-## 📥 СКАЧАТЬ ПРИЛОЖЕНИЯ (Релиз v1.9.2)
+## 📥 СКАЧАТЬ ПРИЛОЖЕНИЯ (Релиз v1.9.3)
 
 Готовые автономные приложения для Android и Windows собраны и доступны для загрузки:
 
 | Платформа | Файл | Размер | Прямая ссылка на скачивание |
 |---|---|---|---|
-| 🤖 **Android (Смартфон)** | `PulseChat-Android.apk` | **4.3 МБ** | 📲 [**СКАЧАТЬ .APK ДЛЯ ANDROID**](https://github.com/romaleks098/pulse-chat/releases/download/v1.9.2/PulseChat-Android.apk) |
-| 💻 **Windows** (Инсталлятор) | `PulseChat-Setup-1.9.2.exe` | **87.5 МБ** | 💻 [**СКАЧАТЬ УСТАНОВЩИК WINDOWS**](https://github.com/romaleks098/pulse-chat/releases/download/v1.9.2/PulseChat-Setup-1.9.2.exe) |
-| 💻 **Windows** (Portable, в 1 клик) | `PulseChat-Portable-1.9.2.exe` | **80.3 МБ** | ⚡ [**СКАЧАТЬ PORTABLE БЕЗ УСТАНОВКИ**](https://github.com/romaleks098/pulse-chat/releases/download/v1.9.2/PulseChat-Portable-1.9.2.exe) |
+| 🤖 **Android (Смартфон)** | `PulseChat-Android.apk` | **4.3 МБ** | 📲 [**СКАЧАТЬ .APK ДЛЯ ANDROID**](https://github.com/romaleks098/pulse-chat/releases/download/v1.9.3/PulseChat-Android.apk) |
+| 💻 **Windows** (Инсталлятор) | `PulseChat-Setup-1.9.3.exe` | **87.5 МБ** | 💻 [**СКАЧАТЬ УСТАНОВЩИК WINDOWS**](https://github.com/romaleks098/pulse-chat/releases/download/v1.9.3/PulseChat-Setup-1.9.3.exe) |
+| 💻 **Windows** (Portable, в 1 клик) | `PulseChat-Portable-1.9.3.exe` | **80.3 МБ** | ⚡ [**СКАЧАТЬ PORTABLE БЕЗ УСТАНОВКИ**](https://github.com/romaleks098/pulse-chat/releases/download/v1.9.3/PulseChat-Portable-1.9.3.exe) |
 
 > 📁 Файл Android APK также доступен прямо в репозитории: [`downloads/PulseChat-Android.apk`](./downloads/PulseChat-Android.apk)  
 > 🌐 Страница официального релиза: [https://github.com/romaleks098/pulse-chat/releases/latest](https://github.com/romaleks098/pulse-chat/releases/latest)
@@ -23,7 +23,7 @@
 
 Для запуска нативного десктопного приложения PulseChat на ПК:
 
-1. **Скачать готовый `.exe`**: [PulseChat-Setup-1.9.2.exe](https://github.com/romaleks098/pulse-chat/releases/download/v1.9.2/PulseChat-Setup-1.9.2.exe) или [Portable](https://github.com/romaleks098/pulse-chat/releases/download/v1.9.2/PulseChat-Portable-1.9.2.exe).
+1. **Скачать готовый `.exe`**: [PulseChat-Setup-1.9.3.exe](https://github.com/romaleks098/pulse-chat/releases/download/v1.9.3/PulseChat-Setup-1.9.3.exe) или [Portable](https://github.com/romaleks098/pulse-chat/releases/download/v1.9.3/PulseChat-Portable-1.9.3.exe).
 2. **Либо запустить из исходников**:
    ```bash
    npm run desktop

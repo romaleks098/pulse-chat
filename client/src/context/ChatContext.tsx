@@ -367,6 +367,9 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
         setToken(res.token);
         setCurrentUser(res.user);
         socketService.connect(res.token);
+        try {
+          (window as any).electronAPI?.focusWindow?.();
+        } catch (_) {}
       }
     };
     window.addEventListener('pulse:auth-success', handleAuthSuccess);
@@ -618,6 +621,9 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setToken(res.token);
     setCurrentUser(res.user);
     socketService.connect(res.token);
+    try {
+      (window as any).electronAPI?.focusWindow?.();
+    } catch (_) {}
     await refreshConversations();
   }, [refreshConversations]);
 

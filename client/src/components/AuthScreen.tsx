@@ -48,6 +48,18 @@ export const AuthScreen: React.FC = () => {
     }
   }, []);
 
+  // Listen for native OAuth success event and ensure window surfaces on desktop
+  useEffect(() => {
+    const handleNativeSuccess = () => {
+      setOauthLoading(null);
+      try {
+        (window as any).electronAPI?.focusWindow?.();
+      } catch (_) {}
+    };
+    window.addEventListener('pulse:auth-success', handleNativeSuccess);
+    return () => window.removeEventListener('pulse:auth-success', handleNativeSuccess);
+  }, []);
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
@@ -78,6 +90,9 @@ export const AuthScreen: React.FC = () => {
       await startOAuthPKCE('google', {
         onSuccess: () => {
           setOauthLoading(null);
+          try {
+            (window as any).electronAPI?.focusWindow?.();
+          } catch (_) {}
         },
         onError: (err) => {
           setOauthLoading(null);

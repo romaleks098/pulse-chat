@@ -13,6 +13,7 @@
 2. [Архитектура проекта и технологический стек](#2-архитектура-проекта-и-технологический-стек)
 3. [Команды разработки, тестирования и сборки](#3-команды-разработки-тестирования-и-сборки)
 4. [Журнал всех обновлений и изменений](#4-журнал-всех-обновлений-и-изменений)
+   - [Версия 1.9.3 — Устранение системной ошибки Windows при входе через Google, автоматический фокус окна PulseChat, протокол pulsechat:// и polling 1с](#версия-193)
    - [Версия 1.9.2 — Защита от системного статус-бара Android, устранение ошибки PKCE при входе через Google, персистентность медиафайлов в PostgreSQL, скрытие GitHub](#версия-192)
    - [Версия 1.9.1 — Исправление запуска Windows .exe (относительные пути Vite), нативный OAuth без веб-редиректа, вход по 6-значному коду из Telegram](#версия-191)
    - [Версия 1.9.0 — Мобильная адаптация (< 768px), Автономные приложения (Android APK & Windows EXE), Нативная OAuth и CI/CD](#версия-190)
@@ -86,6 +87,62 @@ git push origin main:master
 ---
 
 ## 4. Журнал всех обновлений и изменений
+
+### Версия 1.9.3
+**Дата:** 24 октября 2026  
+**Категория:** Desktop Integration / Windows UX / OAuth Smooth Flow / Protocol Handler  
+**Статус:** Релиз v1.9.3: Устранение системной ошибки Windows «Нет приложения, сопоставленного с этим файлом» при входе через Google, автоматический вывод окна PulseChat на передний план, регистрация протокола pulsechat:// и ускорение пуллинга до 1 секунды  
+**Суть обновления:**  
+1. **Устранение системной ошибки Windows при входе через Google в браузере:**
+   - **Проблема:** После успешного выбора аккаунта Google в браузере Windows выдавала системное диалоговое окно ошибки: `"pulsechat://auth/callback?code=... — Нет приложения, сопоставленного с этим файлом для выполнения этого действия"`.
+   - **Корневая причина:** На странице подтверждения авторизации `/api/auth/google/callback` сервер безусловно вызывал `window.location.href = "pulsechat://auth/callback?code=..."` и отображал ссылку на этот протокол. На Windows в Portable-версии и без системной ассоциации браузер передавал вызов ОС, вызывая ошибку. При этом десктопное приложение уже само забирает код авторизации через WebSocket и HTTP-polling!
+   - **Решение:**
+     - В `server/src/routes/auth.ts` HTML-страница успешной авторизации (`completeOAuthRedirect`) разделена на две адаптивные сущности с проверкой `navigator.userAgent`:
+       - **Для Android (`/Android/i.test(navigator.userAgent)`):** сохранён прямой переход `window.location.href = "${deepLink}"` и кнопка «Вернуться в приложение PulseChat» (в Android APK зарегистрирован Intent-filter).
+       - **Для Desktop / Windows:** вызов `window.location.href = "pulsechat://..."` полностью убран, а ссылка удалена. Вместо этого в браузере отображается статусная карточка: *«✅ Авторизация успешна! Вы уже вошли в приложение PulseChat. Эту вкладку можно закрыть»* с кнопкой «Закрыть вкладку» (`window.close()`). На Windows системная ошибка больше никогда не появляется.
+2. **Автоматический вывод окна приложения PulseChat на передний план после входа:**
+   - **Проблема:** После завершения входа в браузере окно PulseChat оставалось лежать под окном браузера, вынуждая пользователя переключаться вручную.
+   - **Решение:**
+     - В `desktop/main.cjs` добавлен IPC-обработчик `window-focus`:
+       ```javascript
+       if (mainWindow.isMinimized()) mainWindow.restore();
+       mainWindow.show();
+       mainWindow.setAlwaysOnTop(true);
+       mainWindow.focus();
+       setTimeout(() => {
+         if (mainWindow && !mainWindow.isDestroyed()) mainWindow.setAlwaysOnTop(false);
+       }, 600);
+       ```
+     - В `desktop/preload.cjs` в `electronAPI` добавлен метод `focusWindow()`.
+     - В `client/src/utils/pkce.ts` сразу после успешного обмена кода на токен немедленно вызывается `window.electronAPI?.focusWindow()`.
+     - В `client/src/components/AuthScreen.tsx` и `client/src/context/ChatContext.tsx` вызов `focusWindow()` интегрирован в обработчик `pulse:auth-success` и в функцию `applyAuthenticatedSession`, благодаря чему окно PulseChat моментально всплывает поверх браузера прямо перед пользователем.
+3. **Регистрация протокола pulsechat:// в Electron и ускорение Polling до 1 секунды:**
+   - В `desktop/main.cjs` обеспечена регистрация протокола `app.setAsDefaultProtocolClient('pulsechat')` с обработкой dev и prod режимов (`process.defaultApp`).
+   - В `desktop/package.json` в секции `build` добавлена конфигурация: `"protocols": [{ "name": "PulseChat", "schemes": ["pulsechat"] }]`.
+   - В `client/src/utils/pkce.ts` интервал опроса сессии `GET /api/auth/native/session/:id` сокращён с 2000 мс до 1000 мс (1 секунда) для мгновенного завершения входа.
+4. **Сборка релизов v1.9.3 и обновление ссылок:**
+   - Собраны новые бинарные файлы для Windows: `PulseChat-Portable-1.9.3.exe` (80.2 МБ) и `PulseChat-Setup-1.9.3.exe` (87.4 МБ).
+   - Обновлены версии во всех `package.json`, `README.md` и `downloads/README.md`.
+   - Добавлен тестовый сьют `scripts/test_v193_fixes.js` (все тесты пройдены 100%).
+
+**Затронутые файлы:**
+- `server/src/routes/auth.ts` — разделение редиректа по User-Agent (Android deep-link, Desktop чистая карточка без вызова протокола).
+- `desktop/main.cjs` — обработчик `window-focus` с `setAlwaysOnTop` и регистрация протокола `pulsechat`.
+- `desktop/preload.cjs` — метод `focusWindow()` в `electronAPI`.
+- `desktop/package.json` — конфигурация `"protocols": [{ "name": "PulseChat", "schemes": ["pulsechat"] }]` и версия 1.9.3.
+- `client/src/utils/pkce.ts` — вызов `focusWindow()` после обмена кода, опрос 1000 мс.
+- `client/src/components/AuthScreen.tsx` — вызов `focusWindow()` по событиям завершения авторизации.
+- `client/src/context/ChatContext.tsx` — вызов `focusWindow()` в `handleAuthSuccess` и `applyAuthenticatedSession`.
+- `package.json`, `client/package.json`, `server/package.json` — бамп версии до 1.9.3.
+- `scripts/test_v193_fixes.js` — автотесты всех изменений v1.9.3.
+- `README.md`, `downloads/README.md` — обновление ссылок на релиз v1.9.3.
+
+**Результаты тестов:**
+- Все автотесты `npm test` успешно пройдены (7/7 сьютов, включая `test_v193_fixes.js`).
+- Сборка `npm run build` завершена без ошибок.
+- Нативные исполняемые файлы Windows `PulseChat-Setup-1.9.3.exe` и `PulseChat-Portable-1.9.3.exe` собраны в папке `desktop/release`.
+
+---
 
 ### Версия 1.9.2
 **Дата:** 24 октября 2026  

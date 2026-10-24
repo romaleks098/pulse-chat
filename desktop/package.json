@@ -1,6 +1,6 @@
 {
   "name": "pulse-chat-desktop",
-  "version": "1.9.2",
+  "version": "1.9.3",
   "description": "PulseChat Desktop App for Windows",
   "author": "PulseChat",
   "main": "main.cjs",
@@ -22,12 +22,14 @@
       "preload.cjs",
       "client_dist/**/*"
     ],
-    "protocols": {
-      "name": "PulseChat Protocol",
-      "schemes": [
-        "pulsechat"
-      ]
-    },
+    "protocols": [
+      {
+        "name": "PulseChat",
+        "schemes": [
+          "pulsechat"
+        ]
+      }
+    ],
     "win": {
       "target": [
         {

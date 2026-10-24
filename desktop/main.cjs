@@ -6,13 +6,17 @@ let mainWindow = null;
 let tray = null;
 app.isQuiting = false;
 
-// Register pulsechat:// custom protocol
-if (process.defaultApp) {
-  if (process.argv.length >= 2) {
-    app.setAsDefaultProtocolClient('pulsechat', process.execPath, [path.resolve(process.argv[1])]);
+// Register pulsechat:// custom protocol for Windows / OS deep linking
+try {
+  if (process.defaultApp) {
+    if (process.argv.length >= 2) {
+      app.setAsDefaultProtocolClient('pulsechat', process.execPath, [path.resolve(process.argv[1])]);
+    }
+  } else {
+    app.setAsDefaultProtocolClient('pulsechat');
   }
-} else {
-  app.setAsDefaultProtocolClient('pulsechat');
+} catch (e) {
+  console.warn('[Electron] Could not register pulsechat protocol:', e);
 }
 
 // Ensure single instance lock
@@ -216,6 +220,20 @@ function createWindow() {
 }
 
 // Window control IPC handlers
+ipcMain.on('window-focus', () => {
+  if (mainWindow) {
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    mainWindow.setAlwaysOnTop(true);
+    mainWindow.focus();
+    setTimeout(() => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.setAlwaysOnTop(false);
+      }
+    }, 600);
+  }
+});
+
 ipcMain.on('window-minimize', () => {
   if (mainWindow) mainWindow.minimize();
 });
